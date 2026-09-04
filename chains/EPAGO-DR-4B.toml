@@ -1,0 +1,82 @@
+# RETIRED GENERATION — the original 4B contract, kept for history only.
+# The ACTIVE generation is chains/EPAGO-DR-30B.toml, which epago.config loads
+# by default; EPAGO_CHAIN_TOML overrides the path. Never point a deployment
+# at this file.
+#
+# Epago chain contract — the single source of truth for one chain generation.
+# Every validator, miner, and eval component reads this file through epago.config.
+# Swapping chain generations (new base arch, new corpus) is a new chain.toml plus
+# an arch shim, never a mechanism rewrite.
+
+[chain]
+name         = "EPAGO-DR-4B"
+netuid       = 0                                  # set at registration; env EPAGO_NETUID overrides
+network      = "finney"
+seed_repo    = "epago-ai/EPAGO-DR-4B-genesis"
+repo_pattern = "^[^/]+/EPAGO-DR-4B-.+$"
+# The scoring validator's hotkey. It publishes an `ek1` king pointer at every
+# coronation; auditing validators follow it so they can adopt the live king from
+# a cold start and mirror the same weight vector. Empty = no pointer following.
+king_authority_hotkey = ""
+# Hotkey allowed to trigger a competition round (`epago chain start-round`).
+# Nothing is evaluated until it does: this is a privileged, owner-held role and
+# a liveness dependency. Empty means no round can ever start.
+round_authority_hotkey = ""
+# Alternative: local API-key trigger. When set, the scoring validator serves
+# POST /round/start on this address and opens a round for any request carrying
+# the key (EPAGO_ROUND_API_KEY, env only — never in this file). The exam is
+# still seeded from a chain block hash the owner cannot choose, so freshness
+# holds; but round timing is no longer chain-visible to auditors. Empty = off.
+round_api_bind = ""
+# Where unallocatable emission goes (no king, empty arena, no task-miner credit).
+# Must be a hotkey you are content to see burn; empty falls back to the lowest
+# UID, which is a real neuron and therefore not a burn at all.
+burn_hotkey = ""
+
+[arch]
+module = "epago.archs.qwen3"
+# Structural keys locked to the king's config.json in addition to the generic set.
+extra_lock_keys = [
+    "rope_theta",
+    "rope_scaling",
+    "tie_word_embeddings",
+    "max_position_embeddings",
+]
+
+[seed]
+tokenizer_repo = "Qwen/Qwen3-4B-Thinking-2507"
+repo_backend   = "hf"                             # "hf" | "oci"
+seed_digest    = "hf:0000000000000000000000000000000000000000"  # pinned at genesis
+
+[eval]
+corpus_repo     = "epago-ai/epago-corpus-snapshot-1"
+corpus_digest   = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+taskgen_release = "R1"
+judge_repo      = "epago-ai/epago-judge-4b"
+judge_digest    = "hf:0000000000000000000000000000000000000000"
+
+# Automated fresh feed for each validator's private holdout pool (optional).
+# Pin a large PUBLIC, DATED dataset by an immutable commit hash: a rotation's
+# secret-seeded slice is then fresh (postdates model cutoffs) and later
+# auditable, with zero human curation. Empty repo -> disabled (falls back to the
+# pinned corpus). Advance `revision` to the newest snapshot to keep it fresh.
+[private_source]
+repo        = ""    # e.g. "HuggingFaceFW/fineweb-edu"
+revision    = ""    # dated snapshot commit hash
+text_column = "text"
+max_shards  = 4     # bounds the per-rotation download (supply headroom)
+
+[quorum]
+theta                 = 0.51    # fraction of active-evaluator stake required to crown
+active_window_duels   = 20      # verdicts within the last N duels define the active set
+verdict_timeout_blocks = 7200   # challenge lapses if quorum not reached (~24h)
+bootstrap_min_evaluators = 3    # below this, bootstrap mode (single-verdict coronation)
+
+[emissions]
+# The king and the arena split the whole emission; the arena receives exactly
+# what the king does not take, so these two must sum to 1.
+king_share        = 0.90
+arena_share       = 0.10
+reign_halflife_blocks = 216000  # ~30 days; decayed king share flows to the arena pool
+coronation_bonus_cap  = 3.0     # bonus multiplier cap on min(lcb/delta, cap)
+coronation_bonus_blocks = 7200  # bonus paid over ~24h

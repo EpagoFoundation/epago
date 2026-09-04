@@ -1,0 +1,97 @@
+name: CI & Docker
+
+# Tests run on every PR to main. Images build+push ONLY when a commit lands on
+# main (i.e. a PR is merged) — never on the PR itself, never on other branches.
+# Enforce "merge via PR only" with a branch-protection rule on main so a merge
+# is the only way to trigger a build.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: epagofoundation            # ghcr namespace (lowercase)
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (chain + dev, plus CPU torch for probe tests)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install ".[chain,dev]"
+      - name: Test suite
+        run: pytest -q
+      - name: Vocabulary sweep (no external project names / AI attribution ships)
+        run: |
+          if grep -rniE "literesearch|simplex-ai|simplex_ai|co-authored-by" \
+               epago/ tests/ docs/ neurons/ scripts/ leaderboard/ ; then
+            echo "::error::forbidden external reference found in shipped files"
+            exit 1
+          fi
+          echo "vocabulary sweep clean"
+
+  build:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # push to GHCR
+    strategy:
+      fail-fast: false       # a failed eval build must not block the validator image
+      matrix:
+        include:
+          - image: epago
+            dockerfile: docker/Dockerfile.validator
+            free_disk: false
+          - image: epago-eval
+            dockerfile: docker/Dockerfile.eval
+            free_disk: true    # the CUDA + vLLM image needs the runner's spare disk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim runner disk (GPU image only)
+        if: matrix.free_disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=main-,format=short
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

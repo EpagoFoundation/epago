@@ -1,0 +1,40 @@
+# Epago GPU eval server: the vLLM rollout backend the validator calls for duels
+# and probes. Built on a CUDA runtime base with the eval extras (torch + vLLM +
+# transformers). One 80 GB-class GPU carries the 4B duel workload (both models,
+# plus the optional pinned judge if enabled locally).
+#
+# Pins match the versions the mechanism is verified against; bump them together.
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    EPAGO_STATE_DIR=/state
+
+# Python 3.12 (project requires >=3.11) via deadsnakes on 22.04.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends software-properties-common ca-certificates git curl \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 python3.12-venv python3.12-dev \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY chains ./chains
+COPY epago ./epago
+COPY neurons ./neurons
+COPY scripts ./scripts
+COPY leaderboard ./leaderboard
+
+# Torch on the CUDA 12.4 wheel index first (minor-version compat with 12.2+
+# drivers), then the eval stack pinned to the verified build.
+RUN python -m pip install --upgrade pip \
+    && python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124 \
+    && python -m pip install "vllm==0.8.5.post1" "transformers==4.51.3" \
+    && python -m pip install ".[chain]"
+
+VOLUME ["/state"]
+ENTRYPOINT ["epago"]

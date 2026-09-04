@@ -1,0 +1,40 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+demo/
+# holdout rotation builds: parquet shards, manifests, the emitted pin
+/holdout/
+*.toml.bak-*
+docs/soak-artifacts/
+*.egg-info/
+.publish_manifest.json
+chain.testnet.toml
+.env
+.env.*
+!.env.example
+*.log
+.claude/
+# eval GPU venv (rebuild with pip install vllm) and downloaded model snapshots
+.venv-eval/
+/models/
+/epago-foundation/models/
+
+# Benchmark anchor corpora — large, rebuildable from scripts/frames_corpus.py
+data/frames/
+data/harvest-big-2026w34/
+data/harvest-big-r2/
+data/corpus-science-big/
+data/harvest-500k-d1/
+data/harvest-500k-d2/
+data/harvest-500k-d3/
+data/harvest-500k-d4/
+data/corpus-science-500k/
+data/harvest-500k-d5/
+data/harvest-500k-d6/
+data/harvest-500k-d7/
+data/harvest-500k-d8/
+data/harvest-500k-d9/
+data/harvest-500k-d10/
+data/harvest-500k-d11/
+data/harvest-500k-d12/

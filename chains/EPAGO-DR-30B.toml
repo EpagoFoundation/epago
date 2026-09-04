@@ -1,0 +1,164 @@
+# Epago chain contract — generation 2: EPAGO-DR-30B.
+#
+# A new base model is a new generation: a fresh chain.toml plus arch pins,
+# never edits to a pinned contract (changing a live generation's lock keys
+# would silently re-judge every validator's holdouts). The repo-root
+# chain.toml remains the 4B test generation; select this one with
+#   EPAGO_CHAIN_TOML=chains/EPAGO-DR-30B.toml
+#
+# Base: Alibaba-NLP/Tongyi-DeepResearch-30B-A3B (Apache-2.0).
+# MoE: 30.5B total parameters, ~3.3B active per token (128 experts, top-8),
+# so it serves at roughly small-dense cost on one 80GB card at bf16.
+
+[chain]
+name         = "EPAGO-DR-30B"
+netuid       = 36                                 # mainnet; env EPAGO_NETUID overrides
+network      = "finney"
+# Genesis king = the upstream checkpoint, pinned by its immutable revision.
+# Simplest honest start: Apache-2.0 permits it and the pin is verifiable by
+# anyone. To rebrand genesis under your own HF org instead, re-upload the
+# snapshot and update repo + digest together (the digest is the commitment;
+# the repo is only where to fetch it).
+seed_repo    = "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B"
+repo_pattern = "^[^/]+/EPAGO-DR-30B-.+$"
+# Deliberately empty: this subnet is run by a single owner validator, which
+# evaluates every round itself. With no authority named, the validator neither
+# publishes king pointers nor follows anyone else's -- and it does not need to.
+#
+# The throne is not published, it is DERIVED. Accepted ev3 verdicts are the coronation record, so any party with
+# chain access walks the same succession and reaches the same king and the same
+# arena roster. A validator that runs no duels computes the identical weight
+# vector as the one that does, and a lost state directory is recoverable.
+#
+# That is the property worth protecting: no authority to trust, no pointer to
+# forge, no central API to consult. See `_succession_from_chain` in
+# epago/validator/service.py.
+king_authority_hotkey = ""
+# Deliberately empty: rounds are opened through the local API trigger below,
+# not by an on-chain authority. Setting both would be redundant; the tick loop
+# checks the API latch first.
+round_authority_hotkey = ""
+# Local API-key trigger, used INSTEAD of an on-chain round authority. Bound to
+# loopback so the endpoint is reachable only from inside the validator host;
+# the shared key lives in EPAGO_ROUND_API_KEY and is compared in constant time.
+#
+# What this gives up: auditors can no longer independently verify *when* a
+# round opened or that the minimum interval was respected, because the trigger
+# is off chain. Those checks live inside the scoring validator.
+#
+# What it does NOT give up, which is the part that protects miners: the exam is
+# still minted from a chain block hash the owner cannot choose. On a valid
+# request the validator stamps the round with the current block and seeds the
+# questions from that block's hash, so the questions do not exist until a block
+# nobody picked is already sealed. A trigger cannot leak an exam.
+#
+# ROUND_MIN_INTERVAL_BLOCKS (~2 days) is enforced by the tick loop regardless,
+# so a flood of requests collapses to one round when the interval allows.
+round_api_bind = "127.0.0.1:8919"
+# Where unallocatable emission goes: the subnet owner hotkey for netuid 36,
+# read from the chain (SubnetOwnerHotkey[36]) rather than transcribed. Empty
+# would fall back to the lowest UID, which is a live neuron and NOT a burn.
+#
+# This key is load-bearing at genesis. Before anything is crowned there is no
+# king, so `compute_weights` sends the entire emission here, and it keeps
+# receiving the arena's budget whenever the arena is empty.
+burn_hotkey = "5EFY7fKVPCNcc89CdnSV4v6QxySoGR5Ad2R2AGaEwVbMkAZR"
+
+[arch]
+module = "epago.archs.qwen3_moe"                  # descriptive; nothing imports it
+# Locked to the king's config.json on top of the generic structural set.
+# The MoE keys are the ones a smuggler would touch: growing num_experts or
+# num_experts_per_tok adds capacity or compute that the paired duel would
+# otherwise never see. Values from the pinned revision (4b0ac576):
+#   num_experts=128  num_experts_per_tok=8  moe_intermediate_size=768
+#   decoder_sparse_step=1  norm_topk_prob=true  mlp_only_layers=[]
+extra_lock_keys = [
+    "num_experts",
+    "num_experts_per_tok",
+    "moe_intermediate_size",
+    "decoder_sparse_step",
+    "norm_topk_prob",
+    "mlp_only_layers",
+    "use_qk_norm",
+    "use_sliding_window",
+    "sliding_window",
+    "rope_theta",
+    "rope_scaling",
+    "tie_word_embeddings",
+    "max_position_embeddings",
+]
+
+[seed]
+tokenizer_repo = "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B"
+repo_backend   = "hf"
+# Immutable revision of the upstream release; resolves exactly this snapshot.
+#
+# DETERMINISM: this pins the bf16 base (~60GB). With more than one validator the
+# genesis king must be the exact RUNNABLE artifact every validator scores with —
+# pin the *pre-quantized* build (e.g. the AWQ-4bit snapshot) by its own revision,
+# not the bf16 base, or each validator quantizes locally and their kings (and
+# therefore their verdicts) diverge. Publish the quantized king to a private repo
+# and pin it here; a single-box testnet can pin the bf16 base since only one
+# validator scores. (Verified: uploading the AWQ-4bit king to HF and materializing
+# it by revision gives every validator byte-identical weights.)
+seed_digest    = "hf:4b0ac5767427a55d08a254f0367e2934976598e0"
+
+[eval]
+# Production corpus: scripts/harvest_holdout.py (159-theme, all-science,
+# one-year window, three independent indexes) -> scripts/build_corpus.py.
+# 50,420 papers across ~135 fields in all four OpenAlex domains. Real pin, not
+# a placeholder: every validator verifies these bytes before it evaluates.
+corpus_repo     = "EpagoFoundation/epago-corpus-science-2"
+corpus_digest   = "sha256:be088e579630f2444b2264097371be2253190b841f13fbdae1ea1e7cb025819b"
+# SCI4: hard to find, easy to check. Multi-constraint retrieval where only the
+# conjunction of crowd-sized constraints is unique, plus computed answers
+# (superlative, count) over a title-pinned set — the answer is never a span
+# that can be copied out of a search result. Ships with mint-time leak
+# self-checks against the live search backend. Measured on this corpus with
+# the pinned base model under harness v4: full 33.9%, oracle 56.1%, closed
+# book 17.3%; ranking agreement with FRAMES proven on a second checkpoint
+# (p = 1e-16). See taskgen/templates.py (SCI4 section) and taskgen/profiles.py.
+taskgen_release = "SCI4"
+judge_repo      = "epago-ai/epago-judge"
+# Deliberately disabled, not unset. Answers in this generation are exact study
+# titles, graded by exact match then alias match, so a judge is never invoked —
+# `judge_invocation_rate` is 0.0 in every duel.
+#
+# The all-zero digest is the sentinel `load_llm_judge` refuses to load, so this
+# value is load-bearing rather than a placeholder: it is what guarantees no
+# validator can quietly start grading with a model nobody pinned. Enabling a
+# judge means pinning a real digest here, which changes the contract and is
+# visible to everyone.
+judge_digest    = "hf:0000000000000000000000000000000000000000"
+
+# Private holdout feed: a dated all-science dataset revision (fresh, auditable).
+# Built by scripts/harvest_holdout.py across all four domains with the SCI3
+# (general) vocabulary. Kept PRIVATE while live; revealed only after it rotates.
+[private_source]
+repo        = "EpagoFoundation/epago-holdout-science-2026w34"
+revision    = "dee721e32e6052989256233541433185f430ef46"
+text_column = "text"
+max_shards  = 4
+
+[quorum]
+theta                 = 0.51
+active_window_duels   = 20
+verdict_timeout_blocks = 7200
+bootstrap_min_evaluators = 3
+
+[emissions]
+# King and arena split the whole emission; the arena receives exactly what the
+# king does not take, so the two must sum to 1.
+#
+# The king's share is a band, not a decay to nothing: 90% at coronation,
+# falling linearly to 85% over three days, then flat. The arena therefore runs
+# from 10% to 15%. An unchallenged reign bleeds, but an incumbent always keeps
+# a defined majority, and both ends of the schedule are checkable against a
+# block number rather than being an asymptote nobody can verify.
+king_share        = 0.90
+king_share_floor  = 0.85
+reign_decay_blocks = 21600      # ~3 days to reach the floor
+arena_share       = 0.10
+reign_halflife_blocks = 216000  # legacy curve, retained for replay
+coronation_bonus_cap  = 3.0
+coronation_bonus_blocks = 7200

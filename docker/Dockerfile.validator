@@ -1,0 +1,28 @@
+# Epago validator (CPU box): chain client, corpus, task pipeline, queue, audit log.
+# The GPU eval box is a separate service (see docker-compose.yml).
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install the mechanism plus Bittensor chain access. The eval extras (torch,
+# vLLM, transformers) are intentionally NOT installed here — they belong on the
+# GPU eval service.
+COPY pyproject.toml README.md ./
+COPY chains ./chains
+COPY epago ./epago
+COPY neurons ./neurons
+COPY scripts ./scripts
+COPY leaderboard ./leaderboard
+RUN pip install --no-cache-dir ".[chain]"
+
+# All mutable state lives under one mount point.
+ENV EPAGO_STATE_DIR=/state
+VOLUME ["/state"]
+
+# Bare CLI entrypoint; the compose service picks the subcommand (validator run,
+# dashboard watch, …) so one image serves every CPU-side role.
+ENTRYPOINT ["epago"]

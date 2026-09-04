@@ -1,0 +1,190 @@
+# Epago validator-in-a-box.
+#
+#   docker compose up -d          # from this docker/ directory
+#
+# Services:
+#   validator  — CPU: chain client, corpus/task pipeline, queue, audits.
+#   eval       — GPU: vLLM rollout server the validator calls for duels/probes.
+#   dashboard  — CPU: re-exports dashboard.json and serves the static site.
+#   watchtower — pulls new GHCR images (built by CI on merge to main) and
+#                restarts the labelled containers automatically.
+#
+# Optional, profile-gated (off by default):
+#   round-scheduler  (auto-rounds)  — opens a competition round on a cadence.
+#   holdout-rotator  (auto-holdout) — rotates the private holdout weekly.
+#
+# Config + secrets live in docker/.env (gitignored). Copy .env.example -> .env
+# and fill it in. Run compose from THIS directory so `.env` is picked up for
+# both ${VAR} interpolation and the containers' env_file.
+#
+# The validator + dashboard run the small CPU image (ghcr…/epago); eval runs the
+# CUDA+vLLM image (ghcr…/epago-eval). Both are published by .github/workflows.
+# For Watchtower to pull them, make the GHCR packages public (or give Watchtower
+# a registry credential — see docker/README.md).
+
+x-watchtower: &watchtower-labels
+  com.centurylinklabs.watchtower.enable: "true"
+
+services:
+  validator:
+    image: ghcr.io/epagofoundation/epago:latest
+    build:                                # local build fallback: docker compose build validator
+      context: ..
+      dockerfile: docker/Dockerfile.validator
+    restart: unless-stopped
+    labels: *watchtower-labels
+    env_file: .env
+    environment:
+      EPAGO_STATE_DIR: /state
+      EPAGO_EVAL_URL: http://eval:8900     # delegate duels/probes to the GPU box
+      # Active chain generation. The image default already loads this contract;
+      # the env var only matters when overriding it from docker/.env.
+      EPAGO_CHAIN_TOML: "${EPAGO_CHAIN_TOML:-/app/chains/EPAGO-DR-30B.toml}"
+      # Round trigger. Both empty (the default) disables it — no behaviour change.
+      # To auto-open rounds, set a bind address and the shared key in docker/.env
+      # (the round-scheduler service uses the same key). See the auto-rounds block.
+      EPAGO_ROUND_API_BIND: "${EPAGO_ROUND_API_BIND:-}"
+      EPAGO_ROUND_API_KEY: "${EPAGO_ROUND_API_KEY:-}"
+    command:
+      - validator
+      - run
+      - --netuid
+      - "${EPAGO_NETUID:?set EPAGO_NETUID in docker/.env}"
+      - --network
+      - "${EPAGO_NETWORK:-finney}"
+      - --corpus
+      - /state/corpus/corpus.db
+      - --wallet-name
+      - "${EPAGO_WALLET_NAME:-default}"
+      - --wallet-hotkey
+      - "${EPAGO_WALLET_HOTKEY:-default}"
+    volumes:
+      - epago-state:/state                 # queue, pools, audit log
+      - epago-corpus:/state/corpus         # pinned corpus snapshot
+      - epago-models:/state/models         # content-addressed model cache
+      - ${EPAGO_WALLET_DIR:-~/.bittensor}:/root/.bittensor:ro   # wallet (read-only)
+    depends_on:
+      - eval
+    healthcheck:                           # healthy when the eval backend answers
+      test: ["CMD", "curl", "-fsS", "http://eval:8900/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+  eval:
+    image: ghcr.io/epagofoundation/epago-eval:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.eval
+    restart: unless-stopped
+    labels: *watchtower-labels
+    env_file: .env
+    environment:
+      EPAGO_CHAIN_TOML: "${EPAGO_CHAIN_TOML:-/app/chains/EPAGO-DR-30B.toml}"
+    command:
+      - eval
+      - serve
+      - --corpus
+      - /state/corpus/corpus.db
+      - --cache-dir
+      - /state/models
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8900"
+    volumes:
+      - epago-corpus:/state/corpus
+      - epago-models:/state/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+
+  dashboard:
+    image: ghcr.io/epagofoundation/epago:latest
+    restart: unless-stopped
+    labels: *watchtower-labels
+    # Re-export dashboard.json from the shared state volume, then serve it.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "epago dashboard watch --state-dir /state --out /site --interval-s 30 & exec python -m http.server 8080 --directory /site"
+    volumes:
+      - epago-state:/state:ro
+      - epago-dashboard:/site
+    ports:
+      - "${EPAGO_DASHBOARD_PORT:-8080}:8080"
+    depends_on:
+      - validator
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Only touch containers we labelled; pull the new image, roll it, clean the old.
+    command: --label-enable --cleanup --rolling-restart --interval ${WATCHTOWER_INTERVAL:-300}
+
+  # Optional auto-rounds: open a competition round on a fixed cadence so the
+  # owner never has to trigger one by hand. The chain enforces the ~2-day
+  # minimum interval (ROUND_MIN_INTERVAL_BLOCKS), so firing more often is safe —
+  # an early request is accepted by the endpoint and simply ignored by the
+  # validator. Off unless its profile is selected.
+  #   enable: set EPAGO_ROUND_API_BIND=0.0.0.0:8799 and EPAGO_ROUND_API_KEY in
+  #           docker/.env, then:  docker compose --profile auto-rounds up -d
+  round-scheduler:
+    image: ghcr.io/epagofoundation/epago:latest
+    restart: unless-stopped
+    profiles: ["auto-rounds"]
+    labels: *watchtower-labels
+    environment:
+      EPAGO_ROUND_API_KEY: "${EPAGO_ROUND_API_KEY:?set EPAGO_ROUND_API_KEY in docker/.env to enable auto-rounds}"
+    entrypoint: ["/bin/sh", "-c"]
+    # request-round is keyed, not wallet-signed; || true so one failed poke
+    # (validator mid-restart) never kills the loop.
+    command:
+      - "while true; do epago chain request-round --url http://validator:8799 || true; sleep ${EPAGO_ROUND_INTERVAL_S:-21600}; done"
+    depends_on:
+      - validator
+
+  # Optional weekly holdout rotation. The private half of every duel is minted
+  # from papers published after a miner's training cutoff — that guarantee holds
+  # only while the feed keeps moving, so rotation is a loop, not a command someone
+  # remembers. Each cycle harvests a fresh dated window, publishes it to a PRIVATE
+  # dated dataset repo, and writes the new [private_source] pin into /state/holdout
+  # as JSON (last-rotation.json) plus a ready-to-paste TOML block.
+  #
+  # The contract is NOT rewritten in the container: chains/*.toml is consensus
+  # config that every validator must read identically, so the operator commits the
+  # emitted block to the repo. See docker/README.md and docs/subnet.md §8.1.
+  #
+  # Off unless its profile is selected.
+  #   enable: put HUGGINGFACE_TOKEN (write scope on the holdout org) in docker/.env,
+  #           then:  docker compose --profile auto-holdout up -d
+  holdout-rotator:
+    image: ghcr.io/epagofoundation/epago:latest
+    restart: unless-stopped
+    profiles: ["auto-holdout"]
+    labels: *watchtower-labels
+    environment:
+      # Supplied by env only — never baked into an image, never committed.
+      HUGGINGFACE_TOKEN: "${HUGGINGFACE_TOKEN:?set HUGGINGFACE_TOKEN (HF write token) in docker/.env to enable auto-holdout}"
+    entrypoint: ["/bin/sh", "-c"]
+    # --apply is what makes a rotation live; set EPAGO_HOLDOUT_MODE=--dry-run in
+    # docker/.env to rehearse without publishing. The script refuses to publish a
+    # period that already went out, or a starved week below --min-papers, so a
+    # restart loop cannot duplicate or thin the feed. || true so one throttled
+    # week (or a hub blip) never kills the loop.
+    command:
+      - "while true; do python /app/scripts/rotate_holdout.py ${EPAGO_HOLDOUT_MODE:---apply} --out /state/holdout --json-out /state/holdout/last-rotation.json --min-papers ${EPAGO_HOLDOUT_MIN_PAPERS:-800} || true; sleep ${EPAGO_HOLDOUT_INTERVAL_S:-604800}; done"
+    volumes:
+      - epago-state:/state                 # /state/holdout: shards, manifest, pin
+
+volumes:
+  epago-dashboard:
+  epago-state:
+  epago-corpus:
+  epago-models:
