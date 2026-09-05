@@ -292,6 +292,7 @@ class ValidatorService:
         self._retry_mirror()
         self._rotate_private_pool(self.deps.clock())
         self._maybe_publish_mailbox(self.deps.clock())
+        self._publish_pool_manifest()
         self._maybe_calibrate(self.deps.clock())
         self._maybe_anchor(self.deps.clock())
         try:
@@ -1381,6 +1382,61 @@ class ValidatorService:
         served = set(self.state.served_public_task_ids)
         served.update(getattr(t, "task_id", str(t)) for t in public_tasks)
         self.state.served_public_task_ids = sorted(served)
+
+    def _publish_pool_manifest(self) -> None:
+        """Copy the sealed pool's task-id manifest into the published tree.
+
+        The manifest is the only artifact an auditor can redraw a round's
+        selection from, so a verdict is checkable exactly as far as this file
+        is reachable. It lives wherever the operator minted it, which is
+        outside every directory the publisher syncs; without this step the
+        replay's ``tasks`` check reports SKIP for every verdict and the
+        sealed-pool audit trail does not work for anyone but us.
+
+        Run every tick rather than once at startup, because the contract can be
+        pointed at a different pool while the box is running. A published
+        manifest that no longer matches the pinned digest is worse than none at
+        all: an auditor would redraw from the wrong id list and see failures
+        that are not real. Copying is a no-op once the bytes match, so the cost
+        is one comparison per tick.
+
+        The digest is verified before anything is copied. A manifest that does
+        not match its commitment is refused loudly and left unpublished --
+        publishing it would hand auditors a file the contract does not vouch
+        for.
+
+        Ids only: no question and no answer is disclosed by this file, so it
+        publishes immediately rather than on the transparency delay that
+        governs a round's actual questions.
+        """
+        from epago.taskgen.sealed_pool import SealedPoolError, is_sealed_release, load_manifest
+
+        if not is_sealed_release(self.cfg.eval.taskgen_release):
+            return
+        source = str(getattr(self.cfg.eval, "public_pool_manifest_path", "") or "")
+        digest = str(getattr(self.cfg.eval, "public_pool_manifest_digest", "") or "")
+        if not source:
+            return
+
+        try:
+            # Verified against the pinned digest, not merely read: this is the
+            # step that stops a stale or swapped manifest reaching auditors.
+            load_manifest(source, digest)
+            payload = Path(source).read_bytes()
+            target = self.state.state_dir / "publications" / Path(source).name
+            if target.exists() and target.read_bytes() == payload:
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_bytes(payload)
+            tmp.replace(target)
+            logger.info("published pool manifest %s (%s)", target.name, digest[:23])
+        except (SealedPoolError, OSError) as exc:
+            self.state.last_error = {
+                "code": "pool_manifest_publish_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "block": self.deps.clock(),
+            }
 
     def _maybe_publish_mailbox(self, block: int) -> None:
         """Re-issue upload credentials for every registered miner.
