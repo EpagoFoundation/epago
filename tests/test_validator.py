@@ -299,6 +299,24 @@ def settle(h, ticks: int = 2, round_no: int | None = None):
 # --------------------------------------------------------------------------- tests
 
 
+def _generator_release_harness(tmp_path, **kw):
+    """A harness pinned to a generator release, whatever the contract ships.
+
+    Tests about generator behaviour must not inherit the live contract's
+    release: when the shipped contract moved to a sealed pool these tests
+    started exercising the wrong path and failing for a reason that had nothing
+    to do with what they assert. Pinning the release here keeps each test about
+    the behaviour it names.
+    """
+    import dataclasses
+
+    h = make_harness(tmp_path, **kw)
+    h.service.cfg = dataclasses.replace(
+        h.cfg, eval=dataclasses.replace(h.cfg.eval, taskgen_release="SCI4")
+    )
+    return h
+
+
 def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
     h = make_harness(tmp_path)
     digest, repo, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
@@ -606,9 +624,12 @@ def test_audit16_matches_record_and_sla_report(tmp_path):
     assert report["p50_blocks"] >= constants.ROUND_MIN_INTERVAL_BLOCKS
     assert report["sla_target_blocks"] > 0
 
-    # Public tasks staged for delayed publication, not yet released.
-    delayed = list((tmp_path / "state" / "audit" / "delayed").glob("*.json"))
-    assert len(delayed) == 1
+    # Public tasks staged for delayed publication, not yet released. A sealed
+    # release stages a second artifact beside the round record -- the round's
+    # questions in full -- so name the one under test rather than counting the
+    # directory, which otherwise fails whenever the contract changes release.
+    delayed_dir = tmp_path / "state" / "audit" / "delayed"
+    assert len(list(delayed_dir.glob("*_round[0-9]*.json"))) == 1
     assert list((tmp_path / "state" / "audit" / "published").glob("*.json")) == []
 
 
@@ -710,7 +731,9 @@ def test_audit_signature_signs_canonical_unsigned_digest(tmp_path):
 
 
 def test_difficulty_controller_fed_from_duel_and_persisted(tmp_path):
-    h = make_harness(
+    # Pinned to a generator release: this test injects its own generate_tasks,
+    # which a sealed-pool release never calls.
+    h = _generator_release_harness(
         tmp_path, outcome=make_outcome(judge_tier_counts=(("exact", 95), ("judge", 5)))
     )
 
@@ -1872,10 +1895,12 @@ def test_a_round_is_not_published_before_its_delay_elapses(tmp_path):
     assert [p for p in h.service.audit_log.release_due(later) if "publicpool" in p.name]
 
 
+
+
 def test_a_generator_release_stages_no_pool_round(tmp_path):
     """Generator-served tasks regenerate from a seed and the round record
     already pins them, so a second publication would be dead weight."""
-    h = make_harness(tmp_path)
+    h = _generator_release_harness(tmp_path)
     h.service._stage_public_pool_round(1, h.service._public_tasks(seed=5, n=5))
     assert not list(h.service.audit_log.delayed_dir.glob("*publicpool*"))
     assert h.service.state.served_public_task_ids == []
