@@ -49,7 +49,15 @@ def king_dir(tmp_path, base_config) -> Path:
 def test_generation_contract_loads_with_real_pins(cfg):
     assert cfg.chain.name == "EPAGO-DR-30B"
     assert cfg.seed.seed_digest == "hf:4b0ac5767427a55d08a254f0367e2934976598e0"
-    assert cfg.eval.taskgen_release == "SCI4"
+    # The public half is served from a sealed pool. A POOL-prefixed release is
+    # what selects that path, and both digests must be present: without them a
+    # validator would be duelling on a pool nobody committed to.
+    assert cfg.eval.taskgen_release == "POOL1"
+    assert cfg.eval.public_pool_digest.startswith("sha256:")
+    assert cfg.eval.public_pool_manifest_digest.startswith("sha256:")
+    assert set(cfg.eval.public_pool_digest.removeprefix("sha256:")) != {"0"}
+    assert set(cfg.eval.public_pool_manifest_digest.removeprefix("sha256:")) != {"0"}
+    assert cfg.eval.public_pool_path and cfg.eval.public_pool_manifest_path
     # The corpus is pinned for real: an all-zeros digest means nothing is
     # committed to and every validator would verify against a different file.
     assert cfg.eval.corpus_digest.startswith("sha256:")

@@ -110,15 +110,40 @@ seed_digest    = "hf:4b0ac5767427a55d08a254f0367e2934976598e0"
 # a placeholder: every validator verifies these bytes before it evaluates.
 corpus_repo     = "EpagoFoundation/epago-corpus-science-2"
 corpus_digest   = "sha256:be088e579630f2444b2264097371be2253190b841f13fbdae1ea1e7cb025819b"
-# SCI4: hard to find, easy to check. Multi-constraint retrieval where only the
-# conjunction of crowd-sized constraints is unique, plus computed answers
-# (superlative, count) over a title-pinned set — the answer is never a span
-# that can be copied out of a search result. Ships with mint-time leak
-# self-checks against the live search backend. Measured on this corpus with
-# the pinned base model under harness v4: full 33.9%, oracle 56.1%, closed
-# book 17.3%; ranking agreement with FRAMES proven on a second checkpoint
-# (p = 1e-16). See taskgen/templates.py (SCI4 section) and taskgen/profiles.py.
-taskgen_release = "SCI4"
+# POOL1: the intersection family, served from a sealed pool. Two anchor studies
+# each name a hidden term and exactly one further study involves both, so the
+# answer is described nowhere in the question and no phrase in it is a query for
+# the target. Uniqueness is proved as set algebra over the corpus index before
+# any wording exists; the route is proved takeable against the live search
+# backend; the label on each anchor is proved supported by that anchor's own
+# text. Measured on this corpus with the pinned base model: full ~22%, oracle
+# 91.0%, closed book 0.0% — fully solvable with the evidence, unsolvable
+# without it.
+#
+# A release name beginning with POOL means the public half is drawn from the
+# sealed pool below rather than regenerated from the seed (see
+# taskgen/sealed_pool.py). The questions were worded by a model, so they are not
+# a pure function of a seed; the same two guarantees are bought by sequencing
+# instead, and the digests below are what make that binding.
+taskgen_release = "POOL1"
+
+# The sealed pool and its task-id manifest. Both digests are commitments: they
+# are fixed here BEFORE a round opens, so the exam provably existed before any
+# challenger's weights were frozen and neither artifact can be swapped
+# afterwards.
+#
+# The pool holds every task with its answer and stays sealed while in service.
+# The manifest holds task ids and nothing else, publishes immediately, and is
+# what an auditor redraws a round's selection from -- ids alone reproduce the
+# draw, so every unasked task stays sealed for later rounds.
+#
+# Audited 5,999/5,999 = 100.0% by scripts/verify_pool.py, which rebuilds the
+# corpus postings itself rather than trusting the minter's index.
+# Audit id: sha256:abf14e83bb45a96771d805c35199cd5d
+public_pool_path            = "/epago-foundation/pools/pool1.jsonl"
+public_pool_digest          = "sha256:eae45b8ffcea1208f980500f274894bffaceeef5235252ec364876025e9518ac"
+public_pool_manifest_path   = "/epago-foundation/pools/pool1-manifest.json"
+public_pool_manifest_digest = "sha256:7d0d7f1a9672033caf3823e995f5c18ace5fa141e0eabb7005e3b0eff186860f"
 judge_repo      = "epago-ai/epago-judge"
 # Deliberately disabled, not unset. Answers in this generation are exact study
 # titles, graded by exact match then alias match, so a judge is never invoked —
