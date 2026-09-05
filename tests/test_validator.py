@@ -1918,3 +1918,92 @@ def test_served_ids_survive_a_restart(tmp_path):
 
     reloaded = ValidatorState.load(h.service.state.state_dir)
     assert set(reloaded.served_public_task_ids) == {t.task_id for t in tasks}
+
+
+def test_the_pool_manifest_is_published_where_auditors_can_fetch_it(tmp_path):
+    """The manifest is the only artifact a round's selection can be redrawn
+    from, so a verdict is checkable exactly as far as this file is reachable.
+    It is minted outside every directory the publisher syncs."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+
+    published = h.service.state.state_dir / "publications" / "manifest.json"
+    assert published.is_file()
+    # Byte-identical to the file the contract pins, or the digest an auditor
+    # checks it against would not match.
+    assert published.read_bytes() == (tmp_path / "manifest.json").read_bytes()
+
+
+def test_the_published_manifest_carries_no_questions_or_answers(tmp_path):
+    """It publishes immediately rather than on the transparency delay, which is
+    only safe because an opaque id list discloses nothing to train on."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+
+    body = (h.service.state.state_dir / "publications" / "manifest.json").read_text()
+    assert "q0" not in body and "a0" not in body
+    assert "tk-0000" in body
+
+
+def test_a_manifest_that_fails_its_digest_is_never_published(tmp_path):
+    """Publishing a manifest the contract does not vouch for would have
+    auditors redraw from the wrong id list and report failures that are not
+    real -- worse than publishing nothing."""
+    h = _sealed_release_harness(tmp_path)
+    (tmp_path / "manifest.json").write_text('{"format":"eppm1","pool_digest":"x","task_ids":["tk-9"]}')
+
+    h.service._publish_pool_manifest()
+
+    assert not (h.service.state.state_dir / "publications" / "manifest.json").exists()
+    assert h.service.state.last_error["code"] == "pool_manifest_publish_failed"
+
+
+def test_republishing_an_unchanged_manifest_does_nothing(tmp_path):
+    """It runs every tick, so the common case must be a comparison rather than
+    a write."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+    published = h.service.state.state_dir / "publications" / "manifest.json"
+    first = published.stat().st_mtime_ns
+
+    h.service._publish_pool_manifest()
+    assert published.stat().st_mtime_ns == first
+
+
+def test_a_repointed_contract_republishes_the_new_manifest(tmp_path):
+    """Running every tick rather than once at startup is what makes this work:
+    a stale manifest would have auditors checking against the wrong pool."""
+    import dataclasses
+
+    from epago.taskgen.sealed_pool import Manifest, load_pool, pool_digest, write_manifest
+
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+    published = h.service.state.state_dir / "publications" / "manifest.json"
+    before = published.read_bytes()
+
+    # A second pool, committed while the box is running.
+    second = tmp_path / "pool2.jsonl"
+    second.write_text((tmp_path / "pool.jsonl").read_text().replace("tk-00", "tk-11"))
+    digest = pool_digest(second.read_bytes())
+    write_manifest(Manifest.from_pool(load_pool(second, digest), digest), tmp_path / "manifest.json")
+    h.service.cfg = dataclasses.replace(
+        h.service.cfg,
+        eval=dataclasses.replace(
+            h.service.cfg.eval,
+            public_pool_manifest_digest=Manifest.from_pool(
+                load_pool(second, digest), digest
+            ).digest(),
+        ),
+    )
+
+    h.service._publish_pool_manifest()
+    assert published.read_bytes() != before
+    assert published.read_bytes() == (tmp_path / "manifest.json").read_bytes()
+
+
+def test_a_generator_release_publishes_no_manifest(tmp_path):
+    """There is no pool to publish an id list for."""
+    h = _generator_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+    assert not list((h.service.state.state_dir / "publications").glob("*manifest*"))
