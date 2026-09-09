@@ -192,11 +192,20 @@ The contract pins two digests, and both must be set before the first round opens
 
 ```toml
 taskgen_release            = "POOL1"
+taskgen_generator_release  = "SCI4"   # a sealed release names no templates
 public_pool_path           = "pools/pool1.jsonl"          # relative to your state dir
 public_pool_digest         = "sha256:..."   # the pool file's exact bytes
 public_pool_manifest_path  = "pools/pool1-manifest.json"  # relative to your state dir
 public_pool_manifest_digest = "sha256:..."  # the manifest's canonical bytes
 ```
+
+`taskgen_generator_release` is required whenever the release is sealed. The
+public half comes from the file, but two paths still generate: the private half
+when a validator runs out of audited pools, and the free format probe on every
+submission. `POOL1` says "served from a file", not "these templates", so both
+would raise without it. Name the generator release your pool's corpus was cut
+for. The loader refuses to start without it rather than failing weeks later on
+the next submission.
 
 **Only the digests are the contract.** Two validators must have identical
 digests or they draw different rounds; nothing in consensus reads a path, only
