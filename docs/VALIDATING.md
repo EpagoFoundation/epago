@@ -192,11 +192,24 @@ The contract pins two digests, and both must be set before the first round opens
 
 ```toml
 taskgen_release            = "POOL1"
-public_pool_path           = "/srv/epago/pools/pool1.jsonl"
+public_pool_path           = "pools/pool1.jsonl"          # relative to your state dir
 public_pool_digest         = "sha256:..."   # the pool file's exact bytes
-public_pool_manifest_path  = "/srv/epago/pools/pool1-manifest.json"
+public_pool_manifest_path  = "pools/pool1-manifest.json"  # relative to your state dir
 public_pool_manifest_digest = "sha256:..."  # the manifest's canonical bytes
 ```
+
+**Only the digests are the contract.** Two validators must have identical
+digests or they draw different rounds; nothing in consensus reads a path, only
+the bytes it points at. So keep the paths relative and they resolve under your
+own state directory, or set them per box without touching a shared byte:
+
+```bash
+export EPAGO_EVAL_PUBLIC_POOL_PATH=/srv/epago/pools/pool1.jsonl
+export EPAGO_EVAL_PUBLIC_POOL_MANIFEST_PATH=/srv/epago/pools/pool1-manifest.json
+```
+
+An absolute value in the toml still works and is used as given, but it makes a
+file that is supposed to be identical everywhere true on one machine only.
 
 **Order matters, and getting it wrong cannot be undone.** Commit both digests
 first, publish the manifest, and only then open a round. Publishing the pool file

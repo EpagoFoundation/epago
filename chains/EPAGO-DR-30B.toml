@@ -144,9 +144,17 @@ taskgen_release = "POOL1"
 # them -- acronyms meaning different things in the two papers that share
 # them -- and this pool is the tasks that survived.
 # Audit id: sha256:cf2936e08482075bc1ea58303387ab52
-public_pool_path            = "/epago-foundation/pools/pool1-sound.jsonl"
+#
+# The two digests are the contract and must be byte-identical for every
+# validator: they are what makes two boxes draw the same round. The two paths
+# are NOT the contract -- nothing in consensus reads them, only the bytes they
+# point at, which the digest verifies. So they are written relative to each
+# operator's own state directory rather than to any one machine's filesystem.
+# Override with EPAGO_EVAL_PUBLIC_POOL_PATH / EPAGO_EVAL_PUBLIC_POOL_MANIFEST_PATH
+# to keep the files somewhere else; an absolute value is used as given.
+public_pool_path            = "pools/pool1-sound.jsonl"
 public_pool_digest          = "sha256:d81bcf3f48741e672b9b21ca617266b04cff9abe4de674e1322344b4f61d5039"
-public_pool_manifest_path   = "/epago-foundation/pools/pool1-sound-manifest.json"
+public_pool_manifest_path   = "pools/pool1-sound-manifest.json"
 public_pool_manifest_digest = "sha256:ad83b6ecc05f45d0f06d30fbd3ef5e121a836a109b4842cb2c8171b04588aeb1"
 judge_repo      = "epago-ai/epago-judge"
 # Deliberately disabled, not unset. Answers in this generation are exact study

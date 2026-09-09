@@ -12,6 +12,7 @@ import pytest
 from epago import constants
 from epago.chain.client import MockChainClient, NeuronView
 from epago.config import load_config
+from epago.taskgen.sealed_pool import is_sealed_release
 from epago.core.reveal import (
     build_king_pointer,
     build_reveal,
@@ -139,6 +140,48 @@ DEFAULT_DOCS = {
 }
 
 
+def _fixture_pool(tmp_path, n=constants.N_PUB_TASKS * 2):
+    """A sealed pool this test run owns, with digests to match.
+
+    Twice ``N_PUB_TASKS`` so a round can be drawn and still leave a remainder for
+    the next one; a pool smaller than one exam makes the validator refuse the
+    round, which reads in a test as a duel that mysteriously never runs. The pinned
+    contract digests cannot be reused because these are different bytes -- which
+    is the point: the digests are the contract, the path is not.
+    """
+    import json as _json
+
+    from epago.taskgen.sealed_pool import (
+        Manifest,
+        load_pool,
+        pool_digest,
+        write_manifest,
+    )
+
+    pool_path = tmp_path / "pools" / "pool.jsonl"
+    pool_path.parent.mkdir(parents=True, exist_ok=True)
+    pool_path.write_text(
+        "\n".join(
+            _json.dumps(
+                {
+                    "task_id": f"tk-{i:06d}",
+                    "question": f"q{i}",
+                    "answer": f"a{i}",
+                    "evidence_doc_ids": [f"d{i}"],
+                    "template": "bridge_intersection",
+                    "hops": 3,
+                }
+            )
+            for i in range(n)
+        )
+        + "\n"
+    )
+    dig = pool_digest(pool_path.read_bytes())
+    manifest_path = tmp_path / "pools" / "manifest.json"
+    manifest_dig = write_manifest(Manifest.from_pool(load_pool(pool_path, dig), dig), manifest_path)
+    return pool_path, dig, manifest_path, manifest_dig
+
+
 def make_harness(
     tmp_path,
     outcome: DuelOutcome | None = None,
@@ -151,6 +194,22 @@ def make_harness(
     default is the pinned 4B contract, and tests/test_generation_30b.py drives
     the same harness with the 30B MoE contract and its real config."""
     cfg = load_config(chain_toml) if chain_toml else load_config()
+    # A sealed release needs a pool on disk, and the contract deliberately does
+    # not say where any one machine keeps it. Give the harness its own, under
+    # tmp_path: while the pinned path was absolute these tests read the pool file
+    # of whoever happened to be running them, and passed only on that box.
+    if is_sealed_release(cfg.eval.taskgen_release):
+        pool_path, pool_dig, manifest_path, manifest_dig = _fixture_pool(tmp_path)
+        cfg = replace(
+            cfg,
+            eval=replace(
+                cfg.eval,
+                public_pool_path=str(pool_path),
+                public_pool_digest=pool_dig,
+                public_pool_manifest_path=str(manifest_path),
+                public_pool_manifest_digest=manifest_dig,
+            ),
+        )
     # Nothing is evaluated until the round authority opens a competition, so
     # every harness names one; `open_round` is what actually triggers a duel.
     cfg = replace(cfg, chain=replace(cfg.chain, round_authority_hotkey=ROUND_AUTHORITY_HK))
