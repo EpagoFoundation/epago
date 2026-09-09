@@ -1403,7 +1403,10 @@ class ValidatorService:
         The digest is verified before anything is copied. A manifest that does
         not match its commitment is refused loudly and left unpublished --
         publishing it would hand auditors a file the contract does not vouch
-        for.
+        for. A sealed release configured with a manifest path but no digest is
+        refused for the same reason: ``load_manifest`` verifies only when it is
+        given a digest, so publishing there would be publishing something
+        nothing vouches for.
 
         Ids only: no question and no answer is disclosed by this file, so it
         publishes immediately rather than on the transparency delay that
@@ -1416,6 +1419,24 @@ class ValidatorService:
         source = str(getattr(self.cfg.eval, "public_pool_manifest_path", "") or "")
         digest = str(getattr(self.cfg.eval, "public_pool_manifest_digest", "") or "")
         if not source:
+            return
+        if not digest:
+            # No commitment, no publication. ``load_manifest`` verifies only when it is
+            # given a digest, so publishing here would hand auditors a file whose only
+            # provenance is "the operator pointed at it" -- the exact substitution this
+            # function claims to prevent. Both fields default to "" and nothing upstream
+            # requires them together, so a config with a path and no digest is one edit
+            # away rather than impossible. Refuse it loudly and leave the tree untouched.
+            self.state.last_error = {
+                "code": "pool_manifest_unpinned",
+                "detail": (
+                    f"{self.cfg.eval.taskgen_release} is a sealed release and "
+                    f"public_pool_manifest_path is set to {source}, but "
+                    "public_pool_manifest_digest is empty; refusing to publish an "
+                    "unverified manifest"
+                ),
+                "block": self.deps.clock(),
+            }
             return
 
         try:

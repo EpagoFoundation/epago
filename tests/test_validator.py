@@ -1958,6 +1958,26 @@ def test_a_manifest_that_fails_its_digest_is_never_published(tmp_path):
     assert h.service.state.last_error["code"] == "pool_manifest_publish_failed"
 
 
+def test_a_manifest_with_no_committed_digest_is_never_published(tmp_path):
+    """``load_manifest`` verifies only when it is given a digest, so a sealed
+    release configured with a path and an empty digest would publish a file
+    whose only provenance is that the operator pointed at it -- the exact
+    substitution the digest check exists to stop. Both config fields default to
+    empty and nothing upstream requires them together."""
+    import dataclasses
+
+    h = _sealed_release_harness(tmp_path)
+    h.service.cfg = dataclasses.replace(
+        h.service.cfg,
+        eval=dataclasses.replace(h.service.cfg.eval, public_pool_manifest_digest=""),
+    )
+
+    h.service._publish_pool_manifest()
+
+    assert not (h.service.state.state_dir / "publications" / "manifest.json").exists()
+    assert h.service.state.last_error["code"] == "pool_manifest_unpinned"
+
+
 def test_republishing_an_unchanged_manifest_does_nothing(tmp_path):
     """It runs every tick, so the common case must be a comparison rather than
     a write."""
