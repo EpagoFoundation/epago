@@ -42,6 +42,7 @@ from typing import Sequence
 import numpy as np
 
 from epago import constants
+from epago.taskgen.sense import minter_rejects, sense_of
 from epago.taskgen.entities import EntityIndex, is_name_like
 
 TEMPLATE_NAME = "bridge_chain"
@@ -251,9 +252,16 @@ class ChainMinter:
         *,
         rng: np.random.Generator,
         min_subject_overlap: int = MIN_SUBJECT_OVERLAP,
+        texts: dict[str, str] | None = None,
     ) -> None:
         self._idx = index
         self._titles = titles
+        # Full document texts, for the word-sense check on bridge terms. The
+        # index proves two papers share a *string*; only the texts can show
+        # whether "STC" is the same thing in both. Optional so callers that
+        # only need the index-level rules -- and every existing test -- run
+        # without loading the corpus; when absent the sense rule is skipped.
+        self._texts = texts
         self._rng = rng
         self._min_overlap = min_subject_overlap
         self._title_terms: dict[str, frozenset[str]] = {}
@@ -729,25 +737,50 @@ class IntersectionMinter(ChainMinter):
         if not cand_a or not cand_b:
             return _no("no_disjoint_anchors")
 
+        # Sense: an anchor must mean the same thing by its bridge as the gold
+        # does. Uniqueness proved that "STC" appears in exactly one paper
+        # alongside "TMAO"; it did not prove that STC is Standard Test
+        # Conditions in the anchor and not slow-transit constipation in the
+        # gold. Where the texts are available, a candidate anchor whose sense
+        # disagrees with the gold is passed over, so a task is rescued when
+        # another anchor agrees and refused -- with the sense rule named as the
+        # reason -- only when none does. See epago.taskgen.sense for the rule
+        # and the measurement behind it.
+        gold_text = self._texts.get(gold, "") if self._texts is not None else None
+
+        def sense_block(doc: str, term: str) -> str | None:
+            if gold_text is None:
+                return None
+            return minter_rejects(sense_of(self._texts.get(doc, ""), gold_text, term), term)
+
         chosen_a = chosen_b = None
         clues_a: tuple[str, ...] = ()
         clues_b: tuple[str, ...] = ()
+        blocked_a = blocked_b = None
         for doc in cand_a:
             got = self._choose_clues(doc, want_singleton=True)
-            if got and len(got[0]) >= MIN_CLUES:
-                chosen_a, clues_a = doc, got[0]
-                break
+            if not (got and len(got[0]) >= MIN_CLUES):
+                continue
+            blocked_a = sense_block(doc, bridge_x)
+            if blocked_a:
+                continue
+            chosen_a, clues_a = doc, got[0]
+            break
         if chosen_a is None:
-            return _no("anchor_a_not_unique")
+            return _no(blocked_a or "anchor_a_not_unique")
         for doc in cand_b:
             if doc == chosen_a:
                 continue
             got = self._choose_clues(doc, want_singleton=True)
-            if got and len(got[0]) >= MIN_CLUES:
-                chosen_b, clues_b = doc, got[0]
-                break
+            if not (got and len(got[0]) >= MIN_CLUES):
+                continue
+            blocked_b = sense_block(doc, bridge_y)
+            if blocked_b:
+                continue
+            chosen_b, clues_b = doc, got[0]
+            break
         if chosen_b is None:
-            return _no("anchor_b_not_unique")
+            return _no(blocked_b or "anchor_b_not_unique")
 
         # Concealment. Neither bridge may be spelled by the clues, and the
         # answer's own title must not be assembled out of them either.

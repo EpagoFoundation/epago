@@ -186,7 +186,7 @@ class ManagedPrivatePool:
                     self._corpus,
                     seed=local_seed,
                     n=constants.N_PRIV_TASKS,
-                    release=self._cfg.eval.taskgen_release,
+                    release=self._cfg.eval.generation_release,
                 )
             except Exception as exc:  # noqa: BLE001 - ingest is best-effort supply
                 logger.warning("private feed failed, falling back to corpus: %s", exc)
@@ -198,7 +198,7 @@ class ManagedPrivatePool:
                 _restamp_private(t, TaskOrigin)
                 for t in generate_tasks(
                     seed=local_seed,
-                    release=self._cfg.eval.taskgen_release,
+                    release=self._cfg.eval.generation_release,
                     corpus=self._corpus,
                     n=constants.N_PRIV_TASKS,
                     king_probe=None,
@@ -349,7 +349,7 @@ def build_production_deps(
         seed = derive_seed(cfg.eval.corpus_digest, cfg.chain.name, PROBE_TASK_SEED_LABEL)
         return generate_tasks(
             seed=seed,
-            release=cfg.eval.taskgen_release,
+            release=cfg.eval.generation_release,
             corpus=corpus,
             n=constants.FORMAT_PROBE_POOL_TASKS,
             king_probe=None,

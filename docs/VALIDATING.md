@@ -136,6 +136,31 @@ All mutable state lives under one directory (default `~/.epago/validator`, moved
 
 | Path | Contents |
 |---|---|
+| `state.json` | Everything the box must not forget across a restart: served task ids, committed pool epoch, last error, last publish blocks |
+| `audit/delayed/` | Round records waiting out the transparency delay. A record here is written but not yet public |
+| `audit/published/` | The same records once the delay elapsed. This is the audit trail anyone replays |
+| `publications/` | What the publisher syncs outward: round files, the pool manifest, the credential mailbox |
+| `private_pool/` | This validator's own holdout, and the retired epochs it has published |
+| `king_mirror/` | The reigning checkpoint, kept locally so a duel does not re-download it |
+| `dashboard/` | The exported view the dashboard reads |
+| `pools/` | Where the sealed pool and its manifest are expected by default (see below) |
+
+### Getting the corpus and the sealed pool
+
+Two files the box needs are **not** in this repository, and neither can be:
+
+| File | Why it is not here | How to check it |
+|---|---|---|
+| The corpus (`corpus.db`) | Hundreds of megabytes of paper text, and every generation pins a different one | `corpus_digest` in `chain.toml` |
+| The sealed pool and its manifest | Publishing the pool would hand miners the exam it is still serving | `public_pool_digest`, `public_pool_manifest_digest` |
+
+Both are distributed out of band, and both are **verified on load against the digest
+pinned in the contract**, so a wrong or tampered file is refused rather than used. That
+is what makes out-of-band distribution safe: you do not have to trust the channel, only
+the digest, and the digest is in the contract every validator shares.
+
+Point the box at them with `--corpus` and, for the pool, either the relative default
+above or `EPAGO_EVAL_PUBLIC_POOL_PATH`.
 
 ## What the box publishes, and where
 
@@ -179,20 +204,46 @@ file instead of the generator (DESIGN §4.0.4). Mint a pool, audit it, then seal
 
 ```bash
 python scripts/mint_intersections.py --out pools/pool1.jsonl --n 6000
-python scripts/verify_pool.py --tasks pools/pool1.jsonl      # re-derives every claim
-python scripts/seal_pool.py  --pool  pools/pool1.jsonl --n-pub-tasks 800
+python scripts/verify_pool.py --tasks pools/pool1.jsonl --write-passing pools/pool1-sound.jsonl
+python scripts/seal_pool.py  --pool  pools/pool1-sound.jsonl --n-pub-tasks 800
 ```
 
-`seal_pool.py` writes the task-id manifest and prints the contract block to paste.
+Seal the file the audit wrote, not the file the minter wrote. The audit fails tasks
+the minter's own checks passed — the measured case is a bridge acronym that means
+different things in the two papers that share it — and `--write-passing` emits
+exactly the tasks that survived every check. `seal_pool.py` then writes the
+task-id manifest and prints the contract block to paste.
 The contract pins two digests, and both must be set before the first round opens:
 
 ```toml
 taskgen_release            = "POOL1"
-public_pool_path           = "/srv/epago/pools/pool1.jsonl"
+taskgen_generator_release  = "SCI4"   # a sealed release names no templates
+public_pool_path           = "pools/pool1.jsonl"          # relative to your state dir
 public_pool_digest         = "sha256:..."   # the pool file's exact bytes
-public_pool_manifest_path  = "/srv/epago/pools/pool1-manifest.json"
+public_pool_manifest_path  = "pools/pool1-manifest.json"  # relative to your state dir
 public_pool_manifest_digest = "sha256:..."  # the manifest's canonical bytes
 ```
+
+`taskgen_generator_release` is required whenever the release is sealed. The
+public half comes from the file, but two paths still generate: the private half
+when a validator runs out of audited pools, and the free format probe on every
+submission. `POOL1` says "served from a file", not "these templates", so both
+would raise without it. Name the generator release your pool's corpus was cut
+for. The loader refuses to start without it rather than failing weeks later on
+the next submission.
+
+**Only the digests are the contract.** Two validators must have identical
+digests or they draw different rounds; nothing in consensus reads a path, only
+the bytes it points at. So keep the paths relative and they resolve under your
+own state directory, or set them per box without touching a shared byte:
+
+```bash
+export EPAGO_EVAL_PUBLIC_POOL_PATH=/srv/epago/pools/pool1.jsonl
+export EPAGO_EVAL_PUBLIC_POOL_MANIFEST_PATH=/srv/epago/pools/pool1-manifest.json
+```
+
+An absolute value in the toml still works and is used as given, but it makes a
+file that is supposed to be identical everywhere true on one machine only.
 
 **Order matters, and getting it wrong cannot be undone.** Commit both digests
 first, publish the manifest, and only then open a round. Publishing the pool file

@@ -109,7 +109,14 @@ def main() -> int:
             _local.corpus = existing
         return existing
 
-    minter = IntersectionMinter(index, titles, rng=np.random.default_rng(args.seed))
+    # Texts ride along so the minter can check that each bridge means the same
+    # thing in the anchor as in the gold -- the one property the index cannot see.
+    minter = IntersectionMinter(
+        index,
+        titles,
+        rng=np.random.default_rng(args.seed),
+        texts={k: f"{v[0]}. {v[1]}" for k, v in docs.items()},
+    )
 
     candidates = minter.intersection_candidates(args.n * args.candidate_factor)
     reasons: Counter[str] = Counter()
@@ -156,6 +163,11 @@ def main() -> int:
     # check, the label guard and the per-tier route check, so a 2x batch cannot
     # fill three tier quotas and one of them silently comes out empty. A call
     # costs about $0.002, so over-drawing is far cheaper than a missing tier.
+    # MEASURED 2026-09-06: index.digest() re-serialises the whole entity index (72 MB, every
+    # posting list sorted) and was called once PER EMITTED TASK below -- seconds each, hours
+    # per pool, and it was the reason a 12,000-task mint had a 20-hour tail. Once is enough:
+    # the index does not change while we mint.
+    index_digest = index.digest()[:16]
     batch = routed[: max(args.n * 4, args.n)]
     with ThreadPoolExecutor(args.workers) as pool:
         verbalizations = list(
@@ -285,7 +297,7 @@ def main() -> int:
                     },
                     "verbalizer": VERBALIZER_VERSION,
                     "verbalizer_model": verbal.model,
-                    "entity_index_digest": index.digest()[:16],
+                    "entity_index_digest": index_digest,
                 },
             }
         )

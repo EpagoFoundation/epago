@@ -39,6 +39,15 @@ So the minter is not trusted. It is checked:
     level in a semiconductor paper -- true of 65% of one batch before the check
     existed, and invisible to every other test including the oracle.
 
+``sense``
+    Where both papers spell an acronym out, they define it as the same thing.
+    Uniqueness is set algebra over strings and cannot see that ``STC`` is
+    Standard Test Conditions in one paper and slow-transit constipation in the
+    other; a task built on that is nonsense nobody can solve by understanding
+    it. Expansions are read from the ``Name (ACR)`` convention and compared. An
+    acronym one paper never spells out is passed and counted, not condemned:
+    an auditor rejects what it can prove wrong.
+
 ``identity``
     The task id is the content hash of question, answer and evidence, so a
     renamed or edited copy cannot pass as the original.
@@ -72,7 +81,8 @@ from epago.taskgen.chain import (  # noqa: E402
     usable_as_answer,
 )
 from epago.taskgen.entities import EntityIndex, extract_bridges  # noqa: E402
-from epago.taskgen.templates import content_task_id  # noqa: E402
+from epago.taskgen.templates import content_task_id
+from epago.taskgen.sense import Sense, sense_of  # noqa: E402
 from epago.taskgen.verbalize import _type_supported_by  # noqa: E402
 
 #: Every property this script re-derives. Named so a verdict says what was
@@ -90,6 +100,7 @@ CHECK_NAMES = (
     "question_does_not_surface_the_answer",
     "anchors_reachable",
     "task_id_matches_content",
+    "bridge_terms_mean_the_same_thing",
 )
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -245,6 +256,18 @@ def check_task(
     if meta.get("bridge_y_type") and not _type_supported_by(b_text, meta["bridge_y_type"]):
         failures.append("label_y_unsupported_by_anchor")
 
+    # --- sense: the two papers must mean the same thing by each bridge ------
+    # Uniqueness is set algebra over strings and cannot see that STC is
+    # Standard Test Conditions in one paper and slow-transit constipation in
+    # the other. Where both papers spell an acronym out, their expansions are
+    # compared; two that share no content word condemn the task. A paper that
+    # never spells it out leaves the check undecided, and an auditor does not
+    # condemn without proof -- those are counted in the summary instead.
+    g_text = " ".join(docs.get(gold, ("", "")))
+    for term, text in ((x, a_text), (y, b_text)):
+        if sense_of(text, g_text, term) is Sense.COLLISION:
+            failures.append(f"bridge_sense_collision({term})")
+
     # --- route: measured against the backend the solver will actually use ---
     if _rank(corpus.search(f"{x} {y}", k=GOLD_FIND_K), gold) is None:
         failures.append("answer_unreachable_from_the_two_terms")
@@ -300,6 +323,11 @@ def main() -> int:
         ),
     )
     ap.add_argument("--expect-corpus-digest", default="", help="fail if the corpus differs")
+    ap.add_argument(
+        "--write-passing",
+        default="",
+        help="write the tasks that pass every check to this JSONL path, so the audit emits the sound pool",
+    )
     args = ap.parse_args()
 
     tasks = [
@@ -389,6 +417,32 @@ def main() -> int:
             print(f"  {name:44s} {count}")
 
     ok = len(tasks) - len(failed)
+
+    # What the sense check could not decide is said, not hidden: an acronym one
+    # paper never spells out passes, and a reader of this report should know
+    # how many tasks rest on that.
+    undecided = 0
+    for task in tasks:
+        meta = task.get("meta") or {}
+        ev = task.get("evidence_doc_ids") or []
+        if len(ev) != 3:
+            continue
+        g_text = " ".join(docs.get(ev[0], ("", "")))
+        for term, doc_id in ((meta.get("bridge_x"), ev[1]), (meta.get("bridge_y"), ev[2])):
+            if term and sense_of(" ".join(docs.get(doc_id, ("", ""))), g_text, term) is Sense.UNVERIFIED:
+                undecided += 1
+                break
+    if undecided:
+        print(
+            f"  NOTE {undecided} task(s) carry an acronym bridge that one paper never spells out; "
+            "the sense check cannot judge those and passes them"
+        )
+
+    if args.write_passing:
+        passing = {id(t) for t, f in results if not f}
+        lines = [json.dumps(t, ensure_ascii=False) for t in tasks if id(t) in passing]
+        Path(args.write_passing).write_text("\n".join(lines) + ("\n" if lines else ""))
+        print(f"  wrote {len(lines)} passing task(s) -> {args.write_passing}")
     print()
     # A verdict anyone can quote and anyone can reproduce: it is a hash of the
     # pool's contents and the corpus they were checked against, so two auditors

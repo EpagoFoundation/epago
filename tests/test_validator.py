@@ -12,6 +12,7 @@ import pytest
 from epago import constants
 from epago.chain.client import MockChainClient, NeuronView
 from epago.config import load_config
+from epago.taskgen.sealed_pool import is_sealed_release
 from epago.core.reveal import (
     build_king_pointer,
     build_reveal,
@@ -139,6 +140,48 @@ DEFAULT_DOCS = {
 }
 
 
+def _fixture_pool(tmp_path, n=constants.N_PUB_TASKS * 2):
+    """A sealed pool this test run owns, with digests to match.
+
+    Twice ``N_PUB_TASKS`` so a round can be drawn and still leave a remainder for
+    the next one; a pool smaller than one exam makes the validator refuse the
+    round, which reads in a test as a duel that mysteriously never runs. The pinned
+    contract digests cannot be reused because these are different bytes -- which
+    is the point: the digests are the contract, the path is not.
+    """
+    import json as _json
+
+    from epago.taskgen.sealed_pool import (
+        Manifest,
+        load_pool,
+        pool_digest,
+        write_manifest,
+    )
+
+    pool_path = tmp_path / "pools" / "pool.jsonl"
+    pool_path.parent.mkdir(parents=True, exist_ok=True)
+    pool_path.write_text(
+        "\n".join(
+            _json.dumps(
+                {
+                    "task_id": f"tk-{i:06d}",
+                    "question": f"q{i}",
+                    "answer": f"a{i}",
+                    "evidence_doc_ids": [f"d{i}"],
+                    "template": "bridge_intersection",
+                    "hops": 3,
+                }
+            )
+            for i in range(n)
+        )
+        + "\n"
+    )
+    dig = pool_digest(pool_path.read_bytes())
+    manifest_path = tmp_path / "pools" / "manifest.json"
+    manifest_dig = write_manifest(Manifest.from_pool(load_pool(pool_path, dig), dig), manifest_path)
+    return pool_path, dig, manifest_path, manifest_dig
+
+
 def make_harness(
     tmp_path,
     outcome: DuelOutcome | None = None,
@@ -151,6 +194,22 @@ def make_harness(
     default is the pinned 4B contract, and tests/test_generation_30b.py drives
     the same harness with the 30B MoE contract and its real config."""
     cfg = load_config(chain_toml) if chain_toml else load_config()
+    # A sealed release needs a pool on disk, and the contract deliberately does
+    # not say where any one machine keeps it. Give the harness its own, under
+    # tmp_path: while the pinned path was absolute these tests read the pool file
+    # of whoever happened to be running them, and passed only on that box.
+    if is_sealed_release(cfg.eval.taskgen_release):
+        pool_path, pool_dig, manifest_path, manifest_dig = _fixture_pool(tmp_path)
+        cfg = replace(
+            cfg,
+            eval=replace(
+                cfg.eval,
+                public_pool_path=str(pool_path),
+                public_pool_digest=pool_dig,
+                public_pool_manifest_path=str(manifest_path),
+                public_pool_manifest_digest=manifest_dig,
+            ),
+        )
     # Nothing is evaluated until the round authority opens a competition, so
     # every harness names one; `open_round` is what actually triggers a duel.
     cfg = replace(cfg, chain=replace(cfg.chain, round_authority_hotkey=ROUND_AUTHORITY_HK))
@@ -297,6 +356,24 @@ def settle(h, ticks: int = 2, round_no: int | None = None):
 
 
 # --------------------------------------------------------------------------- tests
+
+
+def _generator_release_harness(tmp_path, **kw):
+    """A harness pinned to a generator release, whatever the contract ships.
+
+    Tests about generator behaviour must not inherit the live contract's
+    release: when the shipped contract moved to a sealed pool these tests
+    started exercising the wrong path and failing for a reason that had nothing
+    to do with what they assert. Pinning the release here keeps each test about
+    the behaviour it names.
+    """
+    import dataclasses
+
+    h = make_harness(tmp_path, **kw)
+    h.service.cfg = dataclasses.replace(
+        h.cfg, eval=dataclasses.replace(h.cfg.eval, taskgen_release="SCI4")
+    )
+    return h
 
 
 def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
@@ -606,9 +683,12 @@ def test_audit16_matches_record_and_sla_report(tmp_path):
     assert report["p50_blocks"] >= constants.ROUND_MIN_INTERVAL_BLOCKS
     assert report["sla_target_blocks"] > 0
 
-    # Public tasks staged for delayed publication, not yet released.
-    delayed = list((tmp_path / "state" / "audit" / "delayed").glob("*.json"))
-    assert len(delayed) == 1
+    # Public tasks staged for delayed publication, not yet released. A sealed
+    # release stages a second artifact beside the round record -- the round's
+    # questions in full -- so name the one under test rather than counting the
+    # directory, which otherwise fails whenever the contract changes release.
+    delayed_dir = tmp_path / "state" / "audit" / "delayed"
+    assert len(list(delayed_dir.glob("*_round[0-9]*.json"))) == 1
     assert list((tmp_path / "state" / "audit" / "published").glob("*.json")) == []
 
 
@@ -710,7 +790,9 @@ def test_audit_signature_signs_canonical_unsigned_digest(tmp_path):
 
 
 def test_difficulty_controller_fed_from_duel_and_persisted(tmp_path):
-    h = make_harness(
+    # Pinned to a generator release: this test injects its own generate_tasks,
+    # which a sealed-pool release never calls.
+    h = _generator_release_harness(
         tmp_path, outcome=make_outcome(judge_tier_counts=(("exact", 95), ("judge", 5)))
     )
 
@@ -1872,10 +1954,12 @@ def test_a_round_is_not_published_before_its_delay_elapses(tmp_path):
     assert [p for p in h.service.audit_log.release_due(later) if "publicpool" in p.name]
 
 
+
+
 def test_a_generator_release_stages_no_pool_round(tmp_path):
     """Generator-served tasks regenerate from a seed and the round record
     already pins them, so a second publication would be dead weight."""
-    h = make_harness(tmp_path)
+    h = _generator_release_harness(tmp_path)
     h.service._stage_public_pool_round(1, h.service._public_tasks(seed=5, n=5))
     assert not list(h.service.audit_log.delayed_dir.glob("*publicpool*"))
     assert h.service.state.served_public_task_ids == []
@@ -1893,3 +1977,112 @@ def test_served_ids_survive_a_restart(tmp_path):
 
     reloaded = ValidatorState.load(h.service.state.state_dir)
     assert set(reloaded.served_public_task_ids) == {t.task_id for t in tasks}
+
+
+def test_the_pool_manifest_is_published_where_auditors_can_fetch_it(tmp_path):
+    """The manifest is the only artifact a round's selection can be redrawn
+    from, so a verdict is checkable exactly as far as this file is reachable.
+    It is minted outside every directory the publisher syncs."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+
+    published = h.service.state.state_dir / "publications" / "manifest.json"
+    assert published.is_file()
+    # Byte-identical to the file the contract pins, or the digest an auditor
+    # checks it against would not match.
+    assert published.read_bytes() == (tmp_path / "manifest.json").read_bytes()
+
+
+def test_the_published_manifest_carries_no_questions_or_answers(tmp_path):
+    """It publishes immediately rather than on the transparency delay, which is
+    only safe because an opaque id list discloses nothing to train on."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+
+    body = (h.service.state.state_dir / "publications" / "manifest.json").read_text()
+    assert "q0" not in body and "a0" not in body
+    assert "tk-0000" in body
+
+
+def test_a_manifest_that_fails_its_digest_is_never_published(tmp_path):
+    """Publishing a manifest the contract does not vouch for would have
+    auditors redraw from the wrong id list and report failures that are not
+    real -- worse than publishing nothing."""
+    h = _sealed_release_harness(tmp_path)
+    (tmp_path / "manifest.json").write_text('{"format":"eppm1","pool_digest":"x","task_ids":["tk-9"]}')
+
+    h.service._publish_pool_manifest()
+
+    assert not (h.service.state.state_dir / "publications" / "manifest.json").exists()
+    assert h.service.state.last_error["code"] == "pool_manifest_publish_failed"
+
+
+def test_a_manifest_with_no_committed_digest_is_never_published(tmp_path):
+    """``load_manifest`` verifies only when it is given a digest, so a sealed
+    release configured with a path and an empty digest would publish a file
+    whose only provenance is that the operator pointed at it -- the exact
+    substitution the digest check exists to stop. Both config fields default to
+    empty and nothing upstream requires them together."""
+    import dataclasses
+
+    h = _sealed_release_harness(tmp_path)
+    h.service.cfg = dataclasses.replace(
+        h.service.cfg,
+        eval=dataclasses.replace(h.service.cfg.eval, public_pool_manifest_digest=""),
+    )
+
+    h.service._publish_pool_manifest()
+
+    assert not (h.service.state.state_dir / "publications" / "manifest.json").exists()
+    assert h.service.state.last_error["code"] == "pool_manifest_unpinned"
+
+
+def test_republishing_an_unchanged_manifest_does_nothing(tmp_path):
+    """It runs every tick, so the common case must be a comparison rather than
+    a write."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+    published = h.service.state.state_dir / "publications" / "manifest.json"
+    first = published.stat().st_mtime_ns
+
+    h.service._publish_pool_manifest()
+    assert published.stat().st_mtime_ns == first
+
+
+def test_a_repointed_contract_republishes_the_new_manifest(tmp_path):
+    """Running every tick rather than once at startup is what makes this work:
+    a stale manifest would have auditors checking against the wrong pool."""
+    import dataclasses
+
+    from epago.taskgen.sealed_pool import Manifest, load_pool, pool_digest, write_manifest
+
+    h = _sealed_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+    published = h.service.state.state_dir / "publications" / "manifest.json"
+    before = published.read_bytes()
+
+    # A second pool, committed while the box is running.
+    second = tmp_path / "pool2.jsonl"
+    second.write_text((tmp_path / "pool.jsonl").read_text().replace("tk-00", "tk-11"))
+    digest = pool_digest(second.read_bytes())
+    write_manifest(Manifest.from_pool(load_pool(second, digest), digest), tmp_path / "manifest.json")
+    h.service.cfg = dataclasses.replace(
+        h.service.cfg,
+        eval=dataclasses.replace(
+            h.service.cfg.eval,
+            public_pool_manifest_digest=Manifest.from_pool(
+                load_pool(second, digest), digest
+            ).digest(),
+        ),
+    )
+
+    h.service._publish_pool_manifest()
+    assert published.read_bytes() != before
+    assert published.read_bytes() == (tmp_path / "manifest.json").read_bytes()
+
+
+def test_a_generator_release_publishes_no_manifest(tmp_path):
+    """There is no pool to publish an id list for."""
+    h = _generator_release_harness(tmp_path)
+    h.service._publish_pool_manifest()
+    assert not list((h.service.state.state_dir / "publications").glob("*manifest*"))

@@ -105,6 +105,21 @@ class EvalSection:
     #: tasks it wished it had asked. Empty for generator-served releases.
     public_pool_manifest_path: str = ""
     public_pool_manifest_digest: str = ""
+    #: The release used wherever tasks must still be GENERATED under a sealed
+    #: one. A sealed release name is not a template mixture -- ``POOL1`` says
+    #: "served from a file", and the file's tasks were minted offline by a
+    #: script the generator has no entry for. But the public half is not the
+    #: only thing that needs tasks: the private half falls back to the
+    #: generator when a validator runs out of audited pools, and the free
+    #: format probe draws its pool from the generator on every submission.
+    #: Both called ``templates_for_release("POOL1")`` and raised.
+    #: Name the generator release the pool's own corpus was cut for.
+    taskgen_generator_release: str = ""
+
+    @property
+    def generation_release(self) -> str:
+        """The release to generate from: the fallback under a sealed release."""
+        return self.taskgen_generator_release or self.taskgen_release
 
 
 @dataclass(frozen=True)
@@ -236,6 +251,17 @@ def load_config(path: str | Path | None = None) -> EpagoConfig:
     total = shares.king_share + shares.arena_share
     if abs(total - 1.0) > 1e-9:
         raise ValueError(f"emission shares must sum to 1.0, got {total}")
+    # Fail at load, not on the first submission. A sealed release with no
+    # generator release still boots and still serves the public half; it breaks
+    # later and elsewhere -- the format probe raises on the next miner to
+    # submit, and the private pool stops rotating once the audited pools run
+    # out, which can be weeks after the box started.
+    if cfg.eval.taskgen_release.upper().startswith("POOL") and not cfg.eval.taskgen_generator_release:
+        raise ValueError(
+            f"eval.taskgen_release {cfg.eval.taskgen_release!r} is served from a sealed pool, "
+            "so it names no templates; set eval.taskgen_generator_release to the release the "
+            "private half and the format probe should generate from"
+        )
     if not 0.0 < cfg.quorum.theta <= 1.0:
         raise ValueError(f"quorum theta must be in (0, 1], got {cfg.quorum.theta}")
     return cfg
