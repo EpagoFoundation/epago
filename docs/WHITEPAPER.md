@@ -322,9 +322,10 @@ document store — swapping the backend is plumbing, not retraining.
 
 The question-generation pipeline is Epago's own, and what makes a task sound is
 **mechanical in every case**: a task is admitted only when its answer is proved unique
-over the corpus index before any wording exists, when the route to that answer is proved
-takeable from the question a solver actually sees, and when the answer is proved to exist
-in the corpus. Numbers inside any quoted context window are masked so a task cannot be
+over the corpus index before any wording exists, when every abbreviation it turns on is
+spelled out to mean the same thing in the papers that share it, when the route to that
+answer is proved takeable from the question a solver actually sees, and when the answer is
+proved to exist in the corpus. Numbers inside any quoted context window are masked so a task cannot be
 solved by pasting the phrase back into search, and tasks that would leak their own answer
 are excluded by construction. Grading is later a mechanical comparison rather than a
 judgment.

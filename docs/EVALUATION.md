@@ -160,9 +160,11 @@ anchors get:
 | `named_one` | one by title, one by description | 2 | 35% |
 | `described_both` | both by description | 3 | 30% |
 
-Every tier hides the answer equally well. What changes is how much work it takes
-to reach the two anchors — so the exam has genuine gradation without ever
-softening the property that makes it sound.
+Every tier hides the answer equally well. What changes is how the anchors are
+presented — by title or by description. Measured across twelve checkpoints, that
+does not make the task harder (see §22): the tiers grade the question's structure,
+not its difficulty, and the property that makes the exam sound is untouched by
+them.
 
 ---
 
@@ -187,6 +189,9 @@ corpus.
 This is why the question can promise "exactly one other study." It is not a
 rhetorical flourish. It is a proved fact, established before anyone chose how to
 phrase it.
+
+It is a proof about **strings**. Whether the two strings mean the same thing in
+both papers that share them is a separate question, and it is Step 6.
 
 ### Step 2 — the answer is real and usable
 
@@ -232,6 +237,42 @@ would be handed the key instead of having to go and read it.
 The rule is precise: leaked means the question spells out the *whole* term.
 Sharing one common word with the question frame is not a leak, and rejecting on
 that would throw away sound tasks.
+
+
+### Step 6 — the words mean the same thing
+
+A uniqueness proof over postings cannot see that `STC` is *Standard Test
+Conditions* in a photovoltaics paper and *slow-transit constipation* in a
+gastroenterology paper. When an anchor and the answer disagree about what an
+acronym means, the task is nonsense: it asks for a paper about two things that
+are not in it, and no amount of understanding can solve it. This was measured,
+not imagined — on a 400-task exam, **13% of tasks were confirmed collisions, the
+RL checkpoints scored 0.0% on them**, and 86% of the colliding bridges were three
+letters long.
+
+The check is mechanical. Scientific abstracts define an acronym on first use as
+*Full Name (ACR)*. Read the words before the parenthesis that spell the acronym
+in each paper and compare them: expansions sharing a content word are the same
+thing; expansions sharing nothing are a collision. No model and no judgment — an
+auditor re-derives it from the corpus exactly as they re-derive uniqueness.
+
+Three verdicts, and the two callers treat the middle one differently on purpose:
+
+| verdict | meaning | auditor | minter |
+|---|---|---|---|
+| **same** | both papers define it, and agree | pass | admit |
+| **collision** | both define it, and disagree | **fail** | **refuse** |
+| **unverified** | one paper never spells it out | pass, and count it | refuse if ≤ 3 letters |
+
+An auditor condemns only on proof, so it passes what it cannot decide and says
+how many tasks that was. A minter needs proof to *admit*, so in the one class
+where collisions concentrate — three-letter acronyms — it refuses anything it
+cannot verify. The asymmetry is deliberate: the same rule applied both ways
+would either discard sound tasks by the thousand or let nonsense through.
+
+What the check cannot see is stated rather than hidden: an acronym that a paper
+uses without ever expanding it — `99mTc-MAA` beside a paper about the metabolite
+`4-methylaminoantipyrine (MAA)` — is a real collision that passes as unverified.
 
 ---
 
@@ -294,7 +335,7 @@ of every ten candidates it considers, and states why for every one.
 ## 7. Independent verification
 
 Anyone can re-derive an entire pool from scratch with `scripts/verify_pool.py` —
-twelve independent checks, on a CPU, with no model and no API key.
+thirteen independent checks, on a CPU, with no model and no API key.
 
 **The design decision that makes this meaningful:** the verifier rebuilds the
 postings **from the corpus itself**. It does not read the entity index the minter
@@ -306,7 +347,7 @@ the same rule the index was built from, and the minter's claim is compared again
 that independent rebuild. A disagreement is reported as a failure of the pool,
 never silently resolved in either direction.
 
-All twelve checks, as the tool names them:
+All thirteen checks, as the tool names them:
 
 | check | establishes |
 |---|---|
@@ -322,20 +363,28 @@ All twelve checks, as the tool names them:
 | `question_does_not_surface_the_answer` | the shortcut is closed |
 | `anchors_reachable` | both anchors are findable from what the question says |
 | `task_id_matches_content` | the id is the content hash, so no task was swapped |
+| `bridge_terms_mean_the_same_thing` | where both papers spell an acronym out, they define it as the same thing |
 
 Result on the audited pool:
 
 ```
-rebuilt postings from 50,420 documents in 13s
+rebuilt postings from 50,420 documents in 17s
 
-VERIFIED 400/400 = 100.0%
-audit id sha256:45e1a468d529dc605e32e13120eb6d6f
+VERIFIED 4796/4796 = 100.0%
+audit id sha256:cf2936e08482075bc1ea58303387ab52
 POOL SOUND — every claim re-derived from the corpus itself,
 no model and no minter-supplied file trusted
 ```
 
-**400 out of 400.** Every uniqueness claim, every route, every label — confirmed
-from the corpus rather than accepted from the pipeline that produced it.
+**4,796 out of 4,796.** Every uniqueness claim, every route, every label, every
+checkable word sense — confirmed from the corpus rather than accepted from the
+pipeline that produced it.
+
+The number worth knowing behind it: the minter produced 5,999 tasks and all
+5,999 passed the twelve lexical checks. The thirteenth — do the two papers mean
+the same thing by each acronym — then failed **1,203 of them**. A lexical audit
+had certified a pool of which a fifth was nonsense, which is exactly why the
+check exists and why this document says *lexical* where it used to say *sound*.
 
 ---
 
@@ -834,10 +883,11 @@ raw per-task outcomes, not from a summary the validator supplied.
 Covered in full in §7. The essential property: `verify_pool.py` **rebuilds the
 corpus postings itself** rather than reading the minter's index, so the one
 guarantee that matters — uniqueness — never rests on a file the auditor did not
-build. Twelve checks per task, on a CPU, with no model and no API key.
+build. Thirteen checks per task, on a CPU, with no model and no API key.
 
-Result on the audited pool: **400/400 = 100.0%**, audit id
-`sha256:45e1a468d529dc605e32e13120eb6d6f`.
+Result on the sealed pool: **4,796/4,796 = 100.0%** across all thirteen checks,
+audit id `sha256:cf2936e08482075bc1ea58303387ab52`. The 1,203 tasks the
+word-sense check removed had passed every lexical check before it.
 
 This layer needs only the corpus. It requires no chain access, no verdict, and no
 cooperation from anyone.
@@ -1008,7 +1058,7 @@ Every one of those is available to anyone. None of them requires our cooperation
 python scripts/verify_pool.py --tasks pool.jsonl --corpus corpus.db
 ```
 
-Twelve checks per task, postings rebuilt from the corpus. Prints
+Thirteen checks per task, postings rebuilt from the corpus. Prints
 `VERIFIED n/n` and an audit id, or names every failure.
 
 **Replay a verdict** — needs the audit record and chain access:
@@ -1141,8 +1191,11 @@ loop.
 
 | measure | result |
 |---|---|
-| tasks independently verified | **400 / 400 = 100.0%** |
-| audit id | `sha256:45e1a468d529dc605e32e13120eb6d6f` |
+| tasks minted | 5,999 |
+| passed the twelve lexical checks | 5,999 / 5,999 |
+| failed the word-sense check | **1,203** — acronyms meaning different things in the two papers |
+| tasks independently verified, all thirteen checks | **4,796 / 4,796 = 100.0%** |
+| audit id | `sha256:cf2936e08482075bc1ea58303387ab52` |
 | documents re-indexed for the audit | 50,420 |
 | minter-supplied files trusted | **none** |
 
@@ -1165,17 +1218,26 @@ Roughly one task in five against a 91% ceiling. **That gap is the competition's
 entire reason to exist**: a large, well-defined margin where progress means
 genuinely better research rather than better memorisation.
 
-### The difficulty ladder is real
+### The tiers grade structure, not difficulty
 
-| arm | named both (1 hop) | named one (2 hops) | described both (3 hops) |
-|---|---|---|---|
-| base bf16 | 24.3% | 23.6% | 18.3% |
-| rl5 bf16 | 21.4% | 20.0% | 16.7% |
-| base awq4 | 20.7% | 22.1% | 14.2% |
+This is a correction. An early 400-task run on the previous pool showed accuracy
+falling with the hop count (24.3% → 23.6% → 18.3%), and that was written up here
+as "measured difficulty". At full sample it does not hold. Pooled across all
+twelve checkpoints on the sound exam — 3,828 episodes:
 
-Every arm degrades monotonically as the structural hop count rises. The tiers are
-not labels — they are measured difficulty.
+| tier | accuracy |
+|---|---|
+| named both (1 hop) | 22.4% ± 1.2 |
+| named one (2 hops) | 25.0% ± 1.2 |
+| described both (3 hops) | **27.9% ± 1.2** |
 
+Accuracy *rises* with the hop count, and the 3-hop/1-hop gap is about three
+standard errors. The reason is not mysterious: the tiers vary how the anchors are
+presented, by title or by description, and a description gives the solver several
+things to search on where a bare title gives one exact string. Every tier still
+hides the answer identically — what the tiers grade is the question's
+**structure**, not its **difficulty**. The difficulty lives in the intersection
+step, which is the same in all three.
 ---
 
 ## Why this design holds up

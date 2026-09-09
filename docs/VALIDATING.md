@@ -179,11 +179,15 @@ file instead of the generator (DESIGN §4.0.4). Mint a pool, audit it, then seal
 
 ```bash
 python scripts/mint_intersections.py --out pools/pool1.jsonl --n 6000
-python scripts/verify_pool.py --tasks pools/pool1.jsonl      # re-derives every claim
-python scripts/seal_pool.py  --pool  pools/pool1.jsonl --n-pub-tasks 800
+python scripts/verify_pool.py --tasks pools/pool1.jsonl --write-passing pools/pool1-sound.jsonl
+python scripts/seal_pool.py  --pool  pools/pool1-sound.jsonl --n-pub-tasks 800
 ```
 
-`seal_pool.py` writes the task-id manifest and prints the contract block to paste.
+Seal the file the audit wrote, not the file the minter wrote. The audit fails tasks
+the minter's own checks passed — the measured case is a bridge acronym that means
+different things in the two papers that share it — and `--write-passing` emits
+exactly the tasks that survived every check. `seal_pool.py` then writes the
+task-id manifest and prints the contract block to paste.
 The contract pins two digests, and both must be set before the first round opens:
 
 ```toml

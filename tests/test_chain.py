@@ -1176,3 +1176,93 @@ def test_a_signed_payload_cannot_be_edited_after_sealing():
     tampered = dict(signed, prefix="submissions/hk-victim/")
     with pytest.raises(EnvelopeError):
         verify_payload(tampered, validator_pub)
+
+
+# --- word sense on bridges ----------------------------------------------------
+
+
+def _sense_corpus():
+    """Two bridges, STC and TMAO, with one gold carrying both.
+
+    STC anchors, in sort order: ``a1_pv`` means Standard Test Conditions (a
+    collision with the gold's slow-transit constipation), ``a2_gi`` means the
+    same thing as the gold, and ``a3_x``/``a4_x`` never spell it out. The
+    collision sorting first is the point: without the sense rule it wins.
+    TMAO anchors all agree with the gold.
+    """
+    gold_text = (
+        "Chronic constipation and serum trimethylamine N-oxide (TMAO). Patients "
+        "were classified as slow-transit constipation (STC) by transit time."
+    )
+    docs = [
+        ("g", gold_text),
+        ("a1_pv", "Photovoltaic modules were rated under Standard Test Conditions (STC) in the lab."),
+        ("a2_gi", "Colonic transit in slow-transit constipation (STC) was measured with markers."),
+        ("a3_x", "A registry of STC cases across three centres was assembled."),
+        ("a4_x", "STC prevalence was compared between cohorts of adults."),
+        ("b1", "Gut-derived trimethylamine N-oxide (TMAO) predicts cardiac events."),
+        ("b2", "Serum trimethylamine N-oxide (TMAO) rose after a choline load."),
+        ("b3", "Plasma trimethylamine N-oxide (TMAO) and kidney outcomes."),
+        ("b4", "Dietary trimethylamine N-oxide (TMAO) sources in fish."),
+    ]
+    titles = {d: f"Study {d} on a distinct clinical question with results" for d, _ in docs}
+    titles["g"] = "Impact of chronic constipation on serum trimethylamine levels in adults"
+    texts = dict(docs)
+    return docs, titles, texts
+
+
+def _sense_minter(monkeypatch, with_texts=True):
+    from epago.taskgen.chain import EntityIndex, IntersectionMinter
+
+    docs, titles, texts = _sense_corpus()
+    index = EntityIndex.build(docs, bands=TEST_BANDS)
+    # Clue selection is not under test here; every anchor qualifies on clues so
+    # that the only thing deciding between them is the sense rule.
+    monkeypatch.setattr(
+        IntersectionMinter, "_choose_clues", lambda self, doc, want_singleton=True: (("alpha", "beta", "gamma"),)
+    )
+    return IntersectionMinter(index, titles, rng=np.random.default_rng(0), texts=texts if with_texts else None)
+
+
+def test_the_anchor_whose_sense_agrees_with_the_gold_is_chosen(monkeypatch):
+    """``a1_pv`` sorts first and qualifies on clues, but its STC is a different
+    thing from the gold's; the minter passes it over for ``a2_gi``."""
+    from collections import Counter
+
+    minter = _sense_minter(monkeypatch)
+    skeleton = minter.build_intersection("g", "STC", "TMAO", reasons=Counter())
+    assert skeleton is not None
+    assert skeleton.anchor_a_doc_id == "a2_gi"
+
+
+def test_a_bridge_with_no_agreeing_anchor_is_refused_with_the_sense_rule_named(monkeypatch):
+    """Take away the agreeing anchor and the only clue-qualified candidates are a
+    collision and two unverified three-letter uses. The reason says which rule
+    refused it, not merely that no anchor was found."""
+    from collections import Counter
+
+    from epago.taskgen.chain import EntityIndex, IntersectionMinter
+
+    docs, titles, texts = _sense_corpus()
+    docs = [d for d in docs if d[0] != "a2_gi"]
+    texts.pop("a2_gi")
+    index = EntityIndex.build(docs, bands=TEST_BANDS)
+    monkeypatch.setattr(
+        IntersectionMinter, "_choose_clues", lambda self, doc, want_singleton=True: (("alpha", "beta", "gamma"),)
+    )
+    minter = IntersectionMinter(index, titles, rng=np.random.default_rng(0), texts=texts)
+    reasons = Counter()
+    assert minter.build_intersection("g", "STC", "TMAO", reasons=reasons) is None
+    assert set(reasons) <= {"bridge_sense_collision", "bridge_sense_unverified_short"}
+    assert sum(reasons.values()) == 1
+
+
+def test_without_texts_the_sense_rule_is_skipped(monkeypatch):
+    """Callers with only the index keep the old behaviour: first clue-qualified
+    anchor wins, whatever it means by the bridge."""
+    from collections import Counter
+
+    minter = _sense_minter(monkeypatch, with_texts=False)
+    skeleton = minter.build_intersection("g", "STC", "TMAO", reasons=Counter())
+    assert skeleton is not None
+    assert skeleton.anchor_a_doc_id == "a1_pv"
