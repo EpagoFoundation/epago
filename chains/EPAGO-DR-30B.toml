@@ -114,7 +114,8 @@ corpus_digest   = "sha256:be088e579630f2444b2264097371be2253190b841f13fbdae1ea1e
 # each name a hidden term and exactly one further study involves both, so the
 # answer is described nowhere in the question and no phrase in it is a query for
 # the target. Uniqueness is proved as set algebra over the corpus index before
-# any wording exists; the route is proved takeable against the live search
+# any wording exists; where the papers spell an acronym out, it is proved to
+# mean the same thing in both; the route is proved takeable against the live search
 # backend; the label on each anchor is proved supported by that anchor's own
 # text. Measured on this corpus with the pinned base model: full ~22%, oracle
 # 91.0%, closed book 0.0% — fully solvable with the evidence, unsolvable
@@ -137,13 +138,16 @@ taskgen_release = "POOL1"
 # what an auditor redraws a round's selection from -- ids alone reproduce the
 # draw, so every unasked task stays sealed for later rounds.
 #
-# Audited 5,999/5,999 = 100.0% by scripts/verify_pool.py, which rebuilds the
-# corpus postings itself rather than trusting the minter's index.
-# Audit id: sha256:abf14e83bb45a96771d805c35199cd5d
-public_pool_path            = "/epago-foundation/pools/pool1.jsonl"
-public_pool_digest          = "sha256:eae45b8ffcea1208f980500f274894bffaceeef5235252ec364876025e9518ac"
-public_pool_manifest_path   = "/epago-foundation/pools/pool1-manifest.json"
-public_pool_manifest_digest = "sha256:7d0d7f1a9672033caf3823e995f5c18ace5fa141e0eabb7005e3b0eff186860f"
+# Audited 4,796/4,796 = 100.0% by scripts/verify_pool.py, which rebuilds the
+# corpus postings itself rather than trusting the minter's index. The minted
+# 5,999 passed every lexical check; the word-sense check then failed 1,203 of
+# them -- acronyms meaning different things in the two papers that share
+# them -- and this pool is the tasks that survived.
+# Audit id: sha256:cf2936e08482075bc1ea58303387ab52
+public_pool_path            = "/epago-foundation/pools/pool1-sound.jsonl"
+public_pool_digest          = "sha256:d81bcf3f48741e672b9b21ca617266b04cff9abe4de674e1322344b4f61d5039"
+public_pool_manifest_path   = "/epago-foundation/pools/pool1-sound-manifest.json"
+public_pool_manifest_digest = "sha256:ad83b6ecc05f45d0f06d30fbd3ef5e121a836a109b4842cb2c8171b04588aeb1"
 judge_repo      = "epago-ai/epago-judge"
 # Deliberately disabled, not unset. Answers in this generation are exact study
 # titles, graded by exact match then alias match, so a judge is never invoked —
