@@ -1316,7 +1316,7 @@ class ValidatorService:
 
         from epago.taskgen.sealed_pool import SealedPoolError, load_pool, select
 
-        path = getattr(self.cfg.eval, "public_pool_path", "")
+        path = self._pool_file(getattr(self.cfg.eval, "public_pool_path", ""))
         digest = getattr(self.cfg.eval, "public_pool_digest", "")
         if not path:
             raise SealedPoolError(
@@ -1383,6 +1383,23 @@ class ValidatorService:
         served.update(getattr(t, "task_id", str(t)) for t in public_tasks)
         self.state.served_public_task_ids = sorted(served)
 
+    def _pool_file(self, configured: str) -> Path | None:
+        """Where this box keeps a sealed-pool file.
+
+        The digests are the contract and must be identical on every validator;
+        the paths are not. Nothing in consensus reads a path -- only the bytes it
+        points at, which the digest verifies -- so an absolute path in the shared
+        ``chain.toml`` would make the contract true on one machine. A relative
+        value resolves under this operator's state directory, an absolute one is
+        used as given, and either can be replaced with
+        ``EPAGO_EVAL_PUBLIC_POOL_PATH`` / ``EPAGO_EVAL_PUBLIC_POOL_MANIFEST_PATH``.
+        """
+        configured = str(configured or "").strip()
+        if not configured:
+            return None
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else self.state.state_dir / path
+
     def _publish_pool_manifest(self) -> None:
         """Copy the sealed pool's task-id manifest into the published tree.
 
@@ -1416,7 +1433,7 @@ class ValidatorService:
 
         if not is_sealed_release(self.cfg.eval.taskgen_release):
             return
-        source = str(getattr(self.cfg.eval, "public_pool_manifest_path", "") or "")
+        source = self._pool_file(getattr(self.cfg.eval, "public_pool_manifest_path", ""))
         digest = str(getattr(self.cfg.eval, "public_pool_manifest_digest", "") or "")
         if not source:
             return
@@ -1431,7 +1448,7 @@ class ValidatorService:
                 "code": "pool_manifest_unpinned",
                 "detail": (
                     f"{self.cfg.eval.taskgen_release} is a sealed release and "
-                    f"public_pool_manifest_path is set to {source}, but "
+                    f"public_pool_manifest_path resolves to {source}, but "
                     "public_pool_manifest_digest is empty; refusing to publish an "
                     "unverified manifest"
                 ),
@@ -1443,8 +1460,8 @@ class ValidatorService:
             # Verified against the pinned digest, not merely read: this is the
             # step that stops a stale or swapped manifest reaching auditors.
             load_manifest(source, digest)
-            payload = Path(source).read_bytes()
-            target = self.state.state_dir / "publications" / Path(source).name
+            payload = source.read_bytes()
+            target = self.state.state_dir / "publications" / source.name
             if target.exists() and target.read_bytes() == payload:
                 return
             target.parent.mkdir(parents=True, exist_ok=True)
