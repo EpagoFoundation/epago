@@ -127,6 +127,10 @@ corpus_digest   = "sha256:be088e579630f2444b2264097371be2253190b841f13fbdae1ea1e
 # a pure function of a seed; the same two guarantees are bought by sequencing
 # instead, and the digests below are what make that binding.
 taskgen_release = "POOL1"
+# The public half comes from the sealed pool, but the private half and the free
+# format probe still generate, and "POOL1" names no templates. SCI4 is what this
+# generation generated from before the pool was sealed, over the same corpus.
+taskgen_generator_release = "SCI4"
 
 # The sealed pool and its task-id manifest. Both digests are commitments: they
 # are fixed here BEFORE a round opens, so the exam provably existed before any

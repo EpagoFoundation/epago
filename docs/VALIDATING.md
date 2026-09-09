@@ -136,6 +136,31 @@ All mutable state lives under one directory (default `~/.epago/validator`, moved
 
 | Path | Contents |
 |---|---|
+| `state.json` | Everything the box must not forget across a restart: served task ids, committed pool epoch, last error, last publish blocks |
+| `audit/delayed/` | Round records waiting out the transparency delay. A record here is written but not yet public |
+| `audit/published/` | The same records once the delay elapsed. This is the audit trail anyone replays |
+| `publications/` | What the publisher syncs outward: round files, the pool manifest, the credential mailbox |
+| `private_pool/` | This validator's own holdout, and the retired epochs it has published |
+| `king_mirror/` | The reigning checkpoint, kept locally so a duel does not re-download it |
+| `dashboard/` | The exported view the dashboard reads |
+| `pools/` | Where the sealed pool and its manifest are expected by default (see below) |
+
+### Getting the corpus and the sealed pool
+
+Two files the box needs are **not** in this repository, and neither can be:
+
+| File | Why it is not here | How to check it |
+|---|---|---|
+| The corpus (`corpus.db`) | Hundreds of megabytes of paper text, and every generation pins a different one | `corpus_digest` in `chain.toml` |
+| The sealed pool and its manifest | Publishing the pool would hand miners the exam it is still serving | `public_pool_digest`, `public_pool_manifest_digest` |
+
+Both are distributed out of band, and both are **verified on load against the digest
+pinned in the contract**, so a wrong or tampered file is refused rather than used. That
+is what makes out-of-band distribution safe: you do not have to trust the channel, only
+the digest, and the digest is in the contract every validator shares.
+
+Point the box at them with `--corpus` and, for the pool, either the relative default
+above or `EPAGO_EVAL_PUBLIC_POOL_PATH`.
 
 ## What the box publishes, and where
 
@@ -192,11 +217,20 @@ The contract pins two digests, and both must be set before the first round opens
 
 ```toml
 taskgen_release            = "POOL1"
+taskgen_generator_release  = "SCI4"   # a sealed release names no templates
 public_pool_path           = "pools/pool1.jsonl"          # relative to your state dir
 public_pool_digest         = "sha256:..."   # the pool file's exact bytes
 public_pool_manifest_path  = "pools/pool1-manifest.json"  # relative to your state dir
 public_pool_manifest_digest = "sha256:..."  # the manifest's canonical bytes
 ```
+
+`taskgen_generator_release` is required whenever the release is sealed. The
+public half comes from the file, but two paths still generate: the private half
+when a validator runs out of audited pools, and the free format probe on every
+submission. `POOL1` says "served from a file", not "these templates", so both
+would raise without it. Name the generator release your pool's corpus was cut
+for. The loader refuses to start without it rather than failing weeks later on
+the next submission.
 
 **Only the digests are the contract.** Two validators must have identical
 digests or they draw different rounds; nothing in consensus reads a path, only

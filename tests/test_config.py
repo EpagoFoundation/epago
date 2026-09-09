@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from epago.config import DEFAULT_CONFIG_PATH, load_config
+from epago.taskgen.templates import templates_for_release
 
 #: Template contract used for text-manipulation tests (validation, env-path);
 #: the default-load test below reads the real shipped default instead.
@@ -46,6 +48,37 @@ class TestLoad:
         cfg = load_config()
         with pytest.raises(AttributeError):
             cfg.chain.netuid = 99  # type: ignore[misc]
+
+
+class TestSealedReleaseNeedsAGenerator:
+    """A sealed release name says "served from a file", not "these templates".
+
+    ``templates_for_release("POOL1")`` raises, and two paths still generate under
+    a sealed release: the private half when a validator runs out of audited
+    pools, and the free format probe on every submission. Catching it at load
+    turns a crash weeks later into a refusal to boot.
+    """
+
+    def test_the_pinned_contract_names_one(self):
+        cfg = load_config()
+        assert cfg.eval.taskgen_release == "POOL1"
+        assert cfg.eval.generation_release == "SCI4"
+        templates_for_release(cfg.eval.generation_release)  # must not raise
+
+    def test_a_generator_release_generates_from_itself(self):
+        section = replace(
+            load_config().eval, taskgen_release="SCI2", taskgen_generator_release=""
+        )
+        assert section.generation_release == "SCI2"
+
+    def test_a_sealed_release_without_one_is_refused(self, tmp_path):
+        raw = DEFAULT_CONFIG_PATH.read_text().replace(
+            'taskgen_generator_release = "SCI4"', ""
+        )
+        broken = tmp_path / "chain.toml"
+        broken.write_text(raw)
+        with pytest.raises(ValueError, match="taskgen_generator_release"):
+            load_config(broken)
 
 
 class TestEnvOverride:
