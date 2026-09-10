@@ -376,8 +376,25 @@ def _generator_release_harness(tmp_path, **kw):
     return h
 
 
-def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
+def _without_fixed_burn(h):
+    """The king-and-arena schedule, with the contract's fixed burn turned off."""
+    h.service.cfg = replace(h.cfg, emissions=replace(h.cfg.emissions, burn_share=0.0))
+    return h
+
+
+def test_a_fixed_burn_pays_the_king_from_its_coronation(tmp_path):
+    """The mainnet contract burns 95% and pays the king 5%, without waiting on Phase A."""
     h = make_harness(tmp_path)
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+
+    settle(h)
+
+    assert h.state.clean_duels < constants.PHASE_B_MIN_CLEAN_DUELS  # the gate is shut
+    assert h.chain.last_weights == pytest.approx({0: 0.95, 2: 0.05})
+
+
+def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
+    h = _without_fixed_burn(make_harness(tmp_path))
     digest, repo, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
 
     settle(h)
@@ -410,7 +427,7 @@ def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
 
 
 def test_phase_b_weights_go_to_new_king(tmp_path):
-    h = make_harness(tmp_path)
+    h = _without_fixed_burn(make_harness(tmp_path))
     # Force the deterministic phase gate (counters + age).
     h.state.clean_duels = constants.PHASE_B_MIN_CLEAN_DUELS + 10
     h.state.organic_dethrones = constants.PHASE_B_MIN_DETHRONES

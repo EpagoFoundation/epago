@@ -257,7 +257,9 @@ Losing with `lcb_pub > 0` — you are probably better, just not provably by
   not require a second hotkey.
 
 A near-miss does not earn emission. The arena pays former kings, not
-challengers — see the emissions section of the whitepaper.
+challengers — see the emissions section of the whitepaper. While mainnet runs
+its fixed burn (95% burned, 5% to the king) there is no arena: only the king
+earns.
 
 ## No bonds
 

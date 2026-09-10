@@ -145,6 +145,12 @@ class EmissionsSection:
     #: asymptotically over a month makes the schedule something a miner can
     #: reason about.
     reign_decay_blocks: int = 21_600  # ~3 days
+    #: A fixed share of the whole emission sent to ``chain.burn_hotkey``. Zero
+    #: keeps the schedule above. Above zero it replaces it: the king takes the
+    #: rest, flat, and the arena is off -- with most of the emission burned,
+    #: what is left is too small to split. The Phase A gate does not apply
+    #: either, since the burn already caps what any king can collect.
+    burn_share: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -251,6 +257,8 @@ def load_config(path: str | Path | None = None) -> EpagoConfig:
     total = shares.king_share + shares.arena_share
     if abs(total - 1.0) > 1e-9:
         raise ValueError(f"emission shares must sum to 1.0, got {total}")
+    if not 0.0 <= shares.burn_share <= 1.0:
+        raise ValueError(f"emissions.burn_share must be in [0, 1], got {shares.burn_share}")
     # Fail at load, not on the first submission. A sealed release with no
     # generator release still boots and still serves the public half; it breaks
     # later and elsewhere -- the format probe raises on the next miner to

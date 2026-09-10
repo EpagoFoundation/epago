@@ -203,3 +203,8 @@ arena_share       = 0.10
 reign_halflife_blocks = 216000  # legacy curve, retained for replay
 coronation_bonus_cap  = 3.0
 coronation_bonus_blocks = 7200
+# Fixed burn, in force now: 95% of the miner emission goes to burn_hotkey and
+# the king takes the other 5%, flat. It replaces the schedule above -- no band,
+# no bonus, no arena -- and pays from the first coronation instead of waiting
+# on the Phase A gate. Set it to 0 to return to the schedule above.
+burn_share = 0.95

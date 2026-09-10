@@ -4,6 +4,7 @@ derivations from state.json + audit.jsonl are pinned here."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -319,6 +320,12 @@ def test_funnel_counts_statuses(state_dir):
     assert counts["queued"] == 1
 
 
+def _schedule_config():
+    """The repo contract with its fixed burn off: the king-and-arena schedule."""
+    cfg = load_config()
+    return replace(cfg, emissions=replace(cfg.emissions, burn_share=0.0))
+
+
 def test_emissions_burn_everything_before_the_phase_gate(state_dir):
     """Phase A pays nobody: the panel must say what the validator actually sets.
 
@@ -327,16 +334,24 @@ def test_emissions_burn_everything_before_the_phase_gate(state_dir):
     panel used to render the Phase B split anyway — a king with a 90% share
     next to a validator burning the whole emission.
     """
-    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    data = export_dashboard(load_dashboard_inputs(state_dir, _schedule_config()))
     e = data["emissions"]
     assert data["kpis"]["phase"] == "burn"
     assert e == {"king": 0.0, "arena": 0.0, "burn": 1.0}
 
 
+def test_emissions_under_a_fixed_burn(state_dir):
+    """The mainnet contract pays the king 5% and burns the rest, gate or not."""
+    e = export_dashboard(load_dashboard_inputs(state_dir, load_config()))["emissions"]
+    assert {k: e[k] for k in ("king", "arena", "burn")} == pytest.approx(
+        {"king": 0.05, "arena": 0.0, "burn": 0.95}
+    )
+
+
 def test_emissions_normalized(state_dir, monkeypatch):
     monkeypatch.setattr(constants, "PHASE_B_MIN_CLEAN_DUELS", 1)
     monkeypatch.setattr(constants, "PHASE_B_MIN_BLOCKS", 0)
-    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    data = export_dashboard(load_dashboard_inputs(state_dir, _schedule_config()))
     e = data["emissions"]
     # King and arena split the whole budget; the dashboard must mirror
     # compute_weights rather than carry its own arithmetic.

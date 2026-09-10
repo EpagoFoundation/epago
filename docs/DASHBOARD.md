@@ -23,7 +23,7 @@ expose internal accuracy climbing while real capability stood still.
 | Duel feed | Every duel: miner, checkpoint, μ public/private, LCB, δ, judge reliance, reveal→verdict latency, outcome | audit log |
 | Miners | Leaderboard: attempts, crowns, near misses, best LCB, arena credit, last active | audit log + `state.json` |
 | Submission pipeline | Funnel of where submissions ended, cheapest gate first | `state.json` |
-| Emission split | Effective king/arena split: the king's position in the 90-85% band, plus the former-king roster | derived from chain + `chain.toml` |
+| Emission split | Effective king/arena/burn split: under a fixed burn, the king's flat share; otherwise its position in the 90-85% band, plus the former-king roster | derived from chain + `chain.toml` |
 | Quorum | θ, bootstrap threshold, verdict timeout, pending candidates | `state.json` + `chain.toml` |
 | SLA | p50/p95 latency, queue, breaker threshold | `state.json` |
 | Task ecosystem | Tasks per duel, generator release, private-pool epoch/digest/rotation, LLM-judge reliance per duel | audit log |

@@ -129,3 +129,20 @@ class TestValidation:
     def test_theta_of_exactly_one_allowed(self, tmp_path):
         ok = self._write(tmp_path, "theta                 = 0.51", "theta                 = 1.0")
         assert load_config(ok).quorum.theta == 1.0
+
+
+class TestFixedBurn:
+    def test_the_mainnet_contract_burns_95_percent(self):
+        assert load_config().emissions.burn_share == pytest.approx(0.95)
+
+    def test_a_contract_without_one_keeps_the_schedule(self):
+        assert load_config(TEMPLATE_TOML).emissions.burn_share == 0.0
+
+    @pytest.mark.parametrize("value", ["-0.1", "1.5"])
+    def test_a_share_outside_zero_to_one_is_refused(self, tmp_path, value):
+        raw = DEFAULT_CONFIG_PATH.read_text().replace("burn_share = 0.95", f"burn_share = {value}")
+        broken = tmp_path / "chain.toml"
+        broken.write_text(raw)
+        with pytest.raises(ValueError, match="burn_share"):
+            load_config(broken)
+

@@ -1947,7 +1947,9 @@ class ValidatorService:
         Phase gate: before :func:`epago.core.emissions.phase_b_active` the full
         emission burns (weight 1.0 on the burn key). In Phase B the weight
         vector is :func:`epago.core.emissions.compute_weights` over the king
-        emission state and arena entries.
+        emission state and arena entries. A fixed burn
+        (``emissions.burn_share`` above zero) skips the gate: the burn key
+        takes that share and the king the rest from its first coronation.
         Bad-faith challengers are disciplined by intake cooldowns (see
         :mod:`epago.validator.intake`), not by weight manipulation.
         """
@@ -1982,7 +1984,9 @@ class ValidatorService:
             min_dethrones=constants.PHASE_B_MIN_DETHRONES,
             min_blocks=constants.PHASE_B_MIN_BLOCKS,
         )
-        if not phase_b:
+        # A fixed burn already caps what any king collects, which is what
+        # Phase A is for, so under one the king is paid from its coronation.
+        if not phase_b and self.cfg.emissions.burn_share <= 0:
             hotkey_weights = {burn_hotkey: 1.0}
         else:
             king_emission = self._king_emission_state(block)

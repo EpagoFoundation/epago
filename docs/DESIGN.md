@@ -633,6 +633,10 @@ rejects anything else):
 | 👑 King | 0.90 → 0.85 | linear over ~3 days, then flat; bonus may hold it at the top of the band |
 | ⚔ Arena | 0.10 | + everything the king does not take |
 
+Mainnet runs a **fixed burn** in place of this split (`burn_share = 0.95`): 95% of
+the miner emission goes to the burn hotkey and the king takes the other 5% — see
+the *Fixed burn* rule below.
+
 The king and the arena split **one pooled budget** of `king_share + arena_share`
 = 1.0: the arena receives exactly what the king does not take, so the vector
 sums to 1 before normalization. Because the two shares are the whole budget, a
@@ -653,6 +657,7 @@ exactly in the salami-slicing scenario the bonus exists to discourage.
 | **Arena roster** | Whatever the king did not take, split **equally** among the `ARENA_MAX_KINGS = 3` most recent former kings. A coronation seats the king it displaced; the fourth displacement retires the oldest. Equal rather than decayed because the roster is already bounded — a decay curve on top would leave the third seat worth almost nothing while still occupying it. A self-dethrone seats nobody: the same hotkey still wears the crown, and seating it in its own arena would pay one party twice out of a budget meant to reward being beaten. Before the first coronation the roster is empty and its budget burns. Entries are derived from the on-chain coronation succession (accepted `ev3` verdicts), never from a validator's own duel history, so a box that scores and a box that only audits compute the identical split. |
 | **Burn fallbacks** | No king → the entire weight goes to the burn hotkey. An empty arena → the arena budget burns. Unallocatable mass is never redistributed silently. The burn hotkey is `chain.burn_hotkey`; leaving it unset falls back to the lowest UID, which is an ordinary registered neuron and therefore **not** a burn — the validator warns at startup when it does this, because in Phase A that neuron collects the subnet's entire emission. |
 | **Phase A → B** | Emissions are burned (Phase A) until the deterministic gate `phase_b_active` fires: at least `PHASE_B_MIN_CLEAN_DUELS = 50` clean duels, at least `PHASE_B_MIN_DETHRONES = 1` organic dethrone, and at least `PHASE_B_MIN_BLOCKS = 100800` (~14 days) since genesis. No operator switch exists. |
+| **Fixed burn** | `burn_share` above 0 replaces the rules above: the burn hotkey takes `burn_share` and the king the rest, flat — no reign band, no bonus, no arena. Phase A does not apply either, since the burn already caps what any king can collect, so the king is paid from its first coronation. No king → everything burns, as before. Mainnet sets `burn_share = 0.95`; `0`, the default, restores the schedule. |
 
 Weights are set every `WEIGHT_INTERVAL_BLOCKS = 300` blocks through the
 commit-reveal weights extrinsic; the validator refuses to start if commit-reveal is
