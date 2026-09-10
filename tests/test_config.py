@@ -146,3 +146,10 @@ class TestFixedBurn:
         with pytest.raises(ValueError, match="burn_share"):
             load_config(broken)
 
+
+class TestPrivateSubmissions:
+    def test_the_mainnet_contract_takes_private_submissions_only(self):
+        assert load_config().chain.private_submissions_only is True
+
+    def test_a_contract_without_the_key_takes_both(self):
+        assert load_config(TEMPLATE_TOML).chain.private_submissions_only is False

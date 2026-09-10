@@ -69,6 +69,12 @@ class ChainSection:
     #: registered neuron, and during Phase A that is the entire subnet emission.
     #: Empty falls back to the old behaviour with a startup warning.
     burn_hotkey: str = ""
+    #: Accept private submissions only: uploads into the validator's bucket,
+    #: which nobody else can read until the model wins. A public ``hf:``
+    #: submission is refused at intake, since its weights were open to every
+    #: rival the moment it was revealed. In the contract rather than an env
+    #: file, because validators that disagreed on it would split every verdict.
+    private_submissions_only: bool = False
 
 
 @dataclass(frozen=True)

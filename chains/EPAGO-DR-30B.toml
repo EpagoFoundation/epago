@@ -63,6 +63,11 @@ round_api_bind = "127.0.0.1:8919"
 # king, so `compute_weights` sends the entire emission here, and it keeps
 # receiving the arena's budget whenever the arena is empty.
 burn_hotkey = "5EFY7fKVPCNcc89CdnSV4v6QxySoGR5Ad2R2AGaEwVbMkAZR"
+# Private submissions only: miners upload into the validator's bucket, where
+# nobody else can read a checkpoint before it wins (docs/MINING.md). A public
+# hf: submission is refused at intake -- its weights were readable by every
+# rival the moment it was revealed.
+private_submissions_only = true
 
 [arch]
 module = "epago.archs.qwen3_moe"                  # descriptive; nothing imports it

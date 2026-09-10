@@ -314,6 +314,7 @@ identically (`epago/validator/intake.py`).
 | 5 | **Stale parent** | `king_digest` does not equal the reigning king's digest | `stale_parent` |
 | 6 | **Self-challenge** | The author hotkey already holds the crown | `self_challenge` |
 | 7 | **Hotkey spent** | The author *hotkey* has already put a submission into the queue. One per hotkey, permanently — refused here, before the queue | `hotkey_spent` |
+| 7b | **Private only** | The contract sets `chain.private_submissions_only` and the challenger is a public `hf:` ref — its weights were readable by every rival from the moment of the reveal | `public_submission` |
 | 8 | **Failure memory** | The digest previously failed a deterministic gate — re-revealing an already-failed checkpoint is free to reject | `failure_memory` |
 | 9 | **Registration** | The hotkey is not registered on the netuid | `unknown_hotkey` |
 | 10 | **Repo name** | The repo does not match `chain.repo_pattern` (`^[^/]+/EPAGO-DR-30B-.+$`), or does not contain the first 8 characters of the author hotkey, case-insensitive (anti-impersonation) | `repo_pattern` / `hotkey_prefix` |

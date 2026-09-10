@@ -212,7 +212,14 @@ def make_harness(
         )
     # Nothing is evaluated until the round authority opens a competition, so
     # every harness names one; `open_round` is what actually triggers a duel.
-    cfg = replace(cfg, chain=replace(cfg.chain, round_authority_hotkey=ROUND_AUTHORITY_HK))
+    # Its challengers are public `hf:` refs, so the harness takes both kinds of
+    # submission; the private-only rule has a test of its own.
+    cfg = replace(
+        cfg,
+        chain=replace(
+            cfg.chain, round_authority_hotkey=ROUND_AUTHORITY_HK, private_submissions_only=False
+        ),
+    )
     chain = MockChainClient(identity_hotkey=VALIDATOR_HK)
     chain.add_neuron(NeuronView(uid=0, hotkey="burn-hk", coldkey="burn-ck", stake=0.0, validator_permit=False))
     chain.add_neuron(NeuronView(uid=1, hotkey=VALIDATOR_HK, coldkey="ck-val-00", stake=100.0, validator_permit=True))
@@ -1680,6 +1687,21 @@ def test_a_public_submission_is_unaffected_by_the_prefix_rule(tmp_path):
     assert validate_submission_prefix(public, "hk-alice") is None
 
 
+def test_a_private_only_contract_refuses_a_public_submission(tmp_path):
+    """Mainnet takes private submissions only. A public `hf:` challenger showed
+    its weights to every rival the moment it was revealed, so intake refuses it
+    before anything is downloaded or dueled."""
+    h = make_harness(tmp_path)
+    h.service.cfg = replace(h.cfg, chain=replace(h.cfg.chain, private_submissions_only=True))
+    digest, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+
+    settle(h)
+
+    assert h.state.statuses[digest] == SubmissionStatus.FAILED_INTAKE.value
+    assert h.state.failure_memory[digest]["code"] == "public_submission"
+    assert h.holder["duel_specs"] == []
+
+
 def test_a_crowned_model_is_fetchable_from_its_public_location(tmp_path):
     """A challenger lives where only its author can write and only the scoring
     validator can read. That is correct while it is a challenger, and broken
@@ -1798,6 +1820,43 @@ def test_the_mailbox_is_not_reissued_on_every_tick(tmp_path, monkeypatch):
 
     h.service._maybe_publish_mailbox(1000 + 600)
     assert len(calls) == 2
+
+
+def test_a_published_mailbox_holds_a_working_credential_for_each_miner(tmp_path, monkeypatch):
+    """The validator's half of private upload, end to end: mint, seal, write.
+
+    A miner's envelope opens with its own key and carries a credential scoped
+    to its prefix, with no `actions` claim -- R2 refuses keys that carry one.
+    """
+    import base64
+    import json as _json
+
+    import nacl.signing
+
+    from epago.chain.envelope import open_envelope
+    from epago.chain.mailbox import MAILBOX_KEY, Mailbox, submission_prefix
+
+    monkeypatch.setenv("EPAGO_R2_PARENT_ACCESS_KEY", "parent")
+    monkeypatch.setenv("EPAGO_R2_PARENT_SECRET_KEY", "secret")
+    monkeypatch.setenv("EPAGO_R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("EPAGO_S3_BUCKET", "epago-submissions")
+    monkeypatch.setenv("EPAGO_S3_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
+    miner = nacl.signing.SigningKey.generate()
+    h = make_harness(tmp_path)
+    monkeypatch.setattr(
+        h.service, "_mailbox_recipients", lambda: {"hk-miner": bytes(miner.verify_key)}
+    )
+
+    h.service._maybe_publish_mailbox(h.chain.block)
+
+    box = Mailbox.from_json((h.state.state_dir / "publications" / MAILBOX_KEY).read_text())
+    creds = open_envelope(box.for_hotkey("hk-miner"), bytes(miner))
+    assert creds["bucket"] == "epago-submissions"
+    assert creds["prefix"] == submission_prefix("hk-miner")
+    payload = base64.b64decode(creds["session_token"]).decode().removeprefix("jwt/").split(".")[1]
+    claims = _json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert claims["paths"]["prefixPaths"] == [submission_prefix("hk-miner")]
+    assert "actions" not in claims
 
 
 def test_a_private_submission_needs_a_hotkey_credentials_can_be_sealed_to():

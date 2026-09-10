@@ -20,7 +20,9 @@ Config is env-driven (credentials are secrets and stay out of chain.toml):
 ``EPAGO_S3_ENDPOINT`` (for R2, ``https://<account-id>.r2.cloudflarestorage.com``),
 ``EPAGO_S3_REGION`` (default ``auto``), ``EPAGO_S3_BUCKET`` (required), and
 ``EPAGO_S3_ACCESS_KEY`` / ``EPAGO_S3_SECRET_KEY``, plus ``EPAGO_S3_SESSION_TOKEN``
-for a temporary credential such as a miner's scoped upload key. The boto3 client is
+for a temporary credential such as a miner's scoped upload key. ``EPAGO_PUBLIC_BUCKET``
+(optional) takes everything the validator publishes, so miners' uploads can sit in
+a bucket nobody else reads (:func:`public_store`). The boto3 client is
 injectable, so the layout and addressing logic is unit-tested without network
 or credentials.
 """
@@ -78,6 +80,29 @@ def _resolved_within(target: Path, rel: str) -> Path:
     if not dest.is_relative_to(root):
         raise ModelStoreError(f"unsafe object key {rel!r}: resolves outside {root}")
     return dest
+
+
+#: Where miners' private uploads live: :func:`epago.chain.mailbox.submission_prefix`
+#: hands each miner ``submissions/<hotkey>/``. Every other key the validator
+#: writes -- crowned models, the credential mailbox, audit and round files --
+#: is meant to be read by anyone.
+SUBMISSIONS_PREFIX = "submissions/"
+
+
+def public_store() -> ObjectStore:
+    """The store for what anyone may read: ``EPAGO_PUBLIC_BUCKET``, else the one bucket.
+
+    R2 makes a whole bucket public or none of it, and a private submission's key
+    is on chain in its reveal. With one public bucket, anyone could fetch a
+    checkpoint that has not won. So miners' uploads stay in ``EPAGO_S3_BUCKET``,
+    and everything published goes to ``EPAGO_PUBLIC_BUCKET`` when it is set.
+    """
+    return ObjectStore(bucket=os.environ.get("EPAGO_PUBLIC_BUCKET", "").strip() or None)
+
+
+def store_for(repo: str) -> ObjectStore:
+    """The store a key belongs in: a miner's upload stays private, the rest is public."""
+    return ObjectStore() if repo.startswith(SUBMISSIONS_PREFIX) else public_store()
 
 
 class ObjectStore:

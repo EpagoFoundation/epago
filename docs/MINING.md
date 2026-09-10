@@ -105,7 +105,7 @@ flowchart TD
 | 2 | **Prepare** | `epago miner prepare <out_dir>` materializes the king locally and copies it into your challenger folder. Confirm your target repo name matches the intake rules (below) *before* you train, not after. |
 | 3 | **Train** | However you like. Keep the architecture identical: every config-lock key must match the king byte-for-byte. |
 | 4 | **Preflight** | `epago miner preflight <challenger_dir> <king_dir> --repo <repo> --hotkey <ss58>` runs the exact checks a validator runs at intake — repo pattern, hotkey prefix, file hygiene, config lock, size cap, exact-copy check — with the same machine-readable failure codes. A submission that fails preflight will fail intake; there is no validator-side leniency. |
-| 5 | **Upload** | Push the folder to your repo. The upload returns a revision hash; your model reference is `hf:<revision>` — an immutable, content-addressed pin. Editing the repo afterwards changes nothing: only the pinned revision is evaluated. |
+| 5 | **Upload** | Upload privately into the validator's bucket with `epago-miner auth` and `epago-miner upload` (see [Where your model lives](#where-your-model-lives)). Your model reference is the printed `sha256:` digest — an immutable, content-addressed pin. Where a contract also takes public submissions you may instead push to a Hugging Face repo and pin `hf:<revision>`; mainnet does not. |
 | 6 | **Reveal** | `epago miner submit --repo <repo> --digest <digest> --king-digest <king_digest>` commits the payload `e2\|<king_digest>\|<your_repo>\|<your_digest>` through the timelock commit-reveal extrinsic. Your hotkey is not in the payload — the chain records who signed, and that is your authorship. It auto-reveals 5 blocks later, chain-stamped with its reveal block. Only your latest reveal counts; revealing again supersedes the previous one. |
 | 7 | **Wait for a round** | Submissions queue. Every ~2 days the round authority opens a competition; your challenge enters the first round whose trigger lands *after* your reveal. |
 | 8 | **Duel** | The whole field answers one exam against the king; each validator runs intake, probes, then the paired duel (800 public + 200 private tasks). The provisional winner is re-dueled once on a fresh exam and must clear the floor **twice** before its ACCEPT is committed (an unconfirmed win settles as a near-miss — the re-duel right stays intact). Each validator commits an `ev3` verdict per entrant; only the confirmed best entrant gets an ACCEPT. |
@@ -121,6 +121,7 @@ Your submission is rejected before any GPU time if it violates any of these:
 
 | Check | Rule |
 |---|---|
+| **Private only** | Mainnet takes private submissions only: a public `hf:` reveal is refused (`public_submission`). A private one must sit under your own `submissions/<hotkey>/` prefix, and your hotkey must be Ed25519. |
 | **Repo name** | Matches `^[^/]+/EPAGO-DR-30B-.+$` **and** contains the first 8 characters of your hotkey (case-insensitive). Example: hotkey `5FHneW46...` → `myorg/EPAGO-DR-30B-5fhnew46-run7`. |
 | **Fresh parent** | The `king_digest` in your reveal must be the reigning king. If the king changes between your training run and your reveal, you are dropped as `stale_parent` — re-verify before revealing. |
 | **Config lock** | `config.json` matches the king on all locked keys (architecture, sizes, heads, rope settings, embedding tying, context length — full list in the spec). `auto_map` is forbidden. |
@@ -198,12 +199,16 @@ one addressed to you. Everyone can read that file; only your hotkey opens your
 entry, and the payload is signed so you can tell a real credential from a
 forgery pointing at someone else's bucket.
 
-Your credentials are **write-only and scoped to your own prefix**. You cannot
-read, list or overwrite anything — not even your own upload. That is
-deliberate: a credential that cannot read cannot leak anything if it is stolen.
-They expire after a few hours; re-run `auth` if an upload spans longer.
+Your credentials are **scoped to your own prefix**: you can write, read back and
+delete your own upload, and nothing else — not another miner's folder, not a
+listing of the bucket. They expire after a few hours; re-run `auth` if an upload
+spans longer.
 
 ### Public
+
+**Not accepted on mainnet.** Its contract sets `private_submissions_only`, and
+intake refuses a public submission (`public_submission`). Where a contract does
+take them:
 
 Push to a Hugging Face repo you own matching `^[^/]+/EPAGO-DR-30B-.+$` and
 submit `hf:<revision>`. Validators fetch that exact revision with no token, so
