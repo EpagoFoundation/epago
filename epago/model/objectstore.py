@@ -19,7 +19,8 @@ revision pins a commit — download resolves one specific object set, and
 Config is env-driven (credentials are secrets and stay out of chain.toml):
 ``EPAGO_S3_ENDPOINT`` (for R2, ``https://<account-id>.r2.cloudflarestorage.com``),
 ``EPAGO_S3_REGION`` (default ``auto``), ``EPAGO_S3_BUCKET`` (required), and
-``EPAGO_S3_ACCESS_KEY`` / ``EPAGO_S3_SECRET_KEY``. The boto3 client is
+``EPAGO_S3_ACCESS_KEY`` / ``EPAGO_S3_SECRET_KEY``, plus ``EPAGO_S3_SESSION_TOKEN``
+for a temporary credential such as a miner's scoped upload key. The boto3 client is
 injectable, so the layout and addressing logic is unit-tested without network
 or credentials.
 """
@@ -89,6 +90,7 @@ class ObjectStore:
         region: str | None = None,
         access_key: str | None = None,
         secret_key: str | None = None,
+        session_token: str | None = None,
         client=None,
     ) -> None:
         self.bucket = bucket or os.environ.get("EPAGO_S3_BUCKET", "")
@@ -96,6 +98,10 @@ class ObjectStore:
         self._region = region or os.environ.get("EPAGO_S3_REGION", DEFAULT_REGION)
         self._access = access_key or os.environ.get("EPAGO_S3_ACCESS_KEY", "")
         self._secret = secret_key or os.environ.get("EPAGO_S3_SECRET_KEY", "")
+        # A miner's upload credential is temporary: its secret is derived from a
+        # prefix-scoped JWT that travels as the session token. Without the token
+        # R2 cannot check the signature, and every upload is refused with a 403.
+        self._token = session_token or os.environ.get("EPAGO_S3_SESSION_TOKEN", "")
         self._client = client  # injectable for tests
 
     def client(self):
@@ -109,6 +115,7 @@ class ObjectStore:
                 region_name=self._region,
                 aws_access_key_id=self._access or None,
                 aws_secret_access_key=self._secret or None,
+                aws_session_token=self._token or None,
                 config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
             )
         return self._client

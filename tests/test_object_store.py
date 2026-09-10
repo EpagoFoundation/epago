@@ -46,6 +46,39 @@ def _model_dir(tmp_path: Path) -> Path:
     return src
 
 
+def test_a_session_token_reaches_the_s3_client(monkeypatch) -> None:
+    """A miner's credential is temporary: its secret is derived from a scoped JWT
+    that R2 reads from the session token. Dropping the token turned every private
+    upload into a 403."""
+    import sys
+    import types
+
+    seen: dict = {}
+    boto3 = types.ModuleType("boto3")
+    boto3.client = lambda *a, **kw: seen.update(kw) or object()
+    botocore = types.ModuleType("botocore")
+    botocore_config = types.ModuleType("botocore.config")
+    botocore_config.Config = lambda **kw: kw
+    monkeypatch.setitem(sys.modules, "boto3", boto3)
+    monkeypatch.setitem(sys.modules, "botocore", botocore)
+    monkeypatch.setitem(sys.modules, "botocore.config", botocore_config)
+    endpoint = "https://acct.r2.cloudflarestorage.com"
+
+    ObjectStore(bucket="b", endpoint=endpoint, access_key="ak", secret_key="sk",
+                session_token="tok").client()
+    assert seen["aws_session_token"] == "tok"
+
+    seen.clear()
+    monkeypatch.setenv("EPAGO_S3_SESSION_TOKEN", "env-tok")
+    ObjectStore(bucket="b", endpoint=endpoint).client()
+    assert seen["aws_session_token"] == "env-tok"
+
+    seen.clear()
+    monkeypatch.delenv("EPAGO_S3_SESSION_TOKEN")
+    ObjectStore(bucket="b", endpoint=endpoint, access_key="ak", secret_key="sk").client()
+    assert seen["aws_session_token"] is None  # long-lived keys still sign on their own
+
+
 def test_upload_is_content_addressed_and_matches_snapshot_digest(tmp_path) -> None:
     src = _model_dir(tmp_path)
     s3 = FakeS3()

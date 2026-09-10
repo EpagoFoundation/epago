@@ -1903,9 +1903,63 @@ def _sealed_release_harness(tmp_path, n=40):
             public_pool_digest=digest,
             public_pool_manifest_path=str(tmp_path / "manifest.json"),
             public_pool_manifest_digest=manifest_digest,
+            taskgen_generator_release="SCI4",
         ),
     )
     return h
+
+
+def _generator_refusing_sealed_releases(*, seed, release, corpus, n, king_probe):
+    """The real generator's contract: a sealed release names no templates."""
+    if is_sealed_release(release):
+        raise ValueError(f"unknown taskgen release: {release!r}")
+    return [f"task-{seed % 997}-{i}" for i in range(4)]
+
+
+def test_a_sealed_release_confirms_and_crowns(tmp_path):
+    """Confirmation drew its exam from the generator, which cannot mint a POOL
+    release: every confirmation raised, every winner was demoted, and nothing
+    could ever be crowned. It now draws from the pool the way the round does --
+    a fresh exam that skips the round's own tasks -- and retires what it asked."""
+    h = _sealed_release_harness(tmp_path, n=constants.N_PUB_TASKS * 2)
+    h.service.deps.generate_tasks = _generator_refusing_sealed_releases
+    digest, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+
+    settle(h)
+
+    assert h.state.king.ref.digest == digest  # confirmed, and crowned
+    round_spec, confirm_spec = h.holder["duel_specs"]
+    asked = {t.task_id for t in round_spec.public_tasks}
+    confirmed_on = {t.task_id for t in confirm_spec.public_tasks}
+    assert len(confirmed_on) == constants.N_PUB_TASKS
+    assert not asked & confirmed_on  # a fresh exam, not a repeat of the round
+    assert asked | confirmed_on <= set(h.state.served_public_task_ids)  # both retired
+
+
+def test_calibration_under_a_sealed_release_draws_from_the_generator(tmp_path):
+    """Calibration asked the generator for the contract's release, which a sealed
+    release cannot serve, so the noise floor could never update. It generates from
+    the release the pool was cut for instead: calibration recurs, and drawing its
+    exams from the pool would spend the pool on measuring noise."""
+    from epago.validator.service import CALIBRATION_EVERY_TICKS
+
+    h = _sealed_release_harness(tmp_path)
+    releases: list[str] = []
+
+    def generator(**kw):
+        releases.append(kw["release"])
+        return _generator_refusing_sealed_releases(**kw)
+
+    h.service.deps.generate_tasks = generator
+    h.service.deps.run_calibration_duel = lambda *a, **k: 0.005
+    h.service.tick()  # the genesis king is in place
+    h.service.state.tick_count = CALIBRATION_EVERY_TICKS
+
+    h.service._maybe_calibrate(h.chain.current_block())
+
+    assert releases == ["SCI4"]
+    assert (h.service.state.last_error or {}).get("code") != "calibration_failed"
+    assert h.service.state.noise_floor_samples  # the sample landed
 
 
 def test_a_round_retires_the_tasks_it_asked(tmp_path):

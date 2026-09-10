@@ -312,6 +312,7 @@ def upload(
         region=credentials.get("region"),
         access_key=credentials.get("access_key"),
         secret_key=credentials.get("secret_key"),
+        session_token=credentials.get("session_token"),
     )
     repo = f"{prefix}/{name}"
     try:
