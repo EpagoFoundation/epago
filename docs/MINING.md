@@ -35,6 +35,51 @@ into scored answers before any capability gain is needed.
 Read the [mechanism spec](DESIGN.md) once; every number below comes from it, and the
 code is the final authority.
 
+## Practice corpus
+
+The exam's 50,420 papers are not handed to miners, on purpose. With the exam's own
+library and the public task minter, a checkpoint could be trained on the sealed pool's
+questions before they are ever asked, and the crown would measure memory rather than
+research. What you are training is the procedure, and the procedure transfers from any
+library of papers — so you get a separate one.
+
+**The practice corpus** is nearly half a million science papers — titles and abstracts
+from Crossref, Europe PMC and PubMed — in exactly the exam corpus's format, with **no
+paper in common** with the exam corpus or the current private holdout (checked by
+document id, by DOI / OpenAlex / PubMed id, by title and by abstract). It is public, and
+versioned so a later release never overwrites this one:
+
+| File | What it is |
+|---|---|
+| [`corpus.db`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/corpus.db) | the library: the same SQLite format and search index the validator's tools read |
+| [`entities-v1.json`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/entities-v1.json) | the entity index the task minter draws from |
+| [`manifest.json`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/manifest.json) | paper counts, sources, and the sha256 digest of each file |
+| [`README.md`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/README.md) | how it was built and how to use it |
+
+Check a download against the manifest before training on it: `sha256sum corpus.db` must
+equal `corpus_digest` without its `sha256:` prefix, and the same for `entities_digest`.
+
+**Mint practice tasks** of the exam's kind with the minter the pools come from, then keep
+only those that pass every check a pool task must pass:
+
+```bash
+python scripts/mint_intersections.py --corpus practice-v1/corpus.db \
+    --index practice-v1/entities-v1.json --out practice-tasks.jsonl --n 500
+python scripts/verify_pool.py --tasks practice-tasks.jsonl --corpus practice-v1/corpus.db \
+    --index practice-v1/entities-v1.json --write-passing practice-sound.jsonl
+```
+
+The minter's last stage phrases each question with a model through OpenRouter
+(`OPENROUTER_API_KEY`; `--model` picks it, default `google/gemini-2.5-flash`).
+
+**Run a checkpoint with the validator's own tools** by pointing them at the practice
+library: `epago eval serve --corpus practice-v1/corpus.db` serves the same search-and-read
+harness a duel runs.
+
+**Real exam questions** follow every round: once its embargo ends, the round's file is
+published with its tasks and the papers they cite. Those tasks are retired — no later
+round asks them again — so they are study material, not an answer key.
+
 ## Lifecycle
 
 ```mermaid
