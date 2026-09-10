@@ -686,7 +686,7 @@ artifacts:
 |---|---|---|---|
 | **pool** | every task with answers | when the pool retires | `public_pool_digest` |
 | **manifest** | task ids only | immediately | `public_pool_manifest_digest` |
-| **round file** | the tasks one round asked | after the embargo | `public_task_ids_digest` |
+| **round file** | the tasks one round asked, with the papers they rest on | after the embargo | `public_task_ids_digest` |
 
 Both digests are fixed in the contract **before** any round opens, so the exam
 provably existed before any challenger's weights were frozen, and neither artifact

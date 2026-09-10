@@ -1995,6 +1995,27 @@ def test_a_staged_round_publishes_its_tasks_in_full(tmp_path):
     assert all(t["question"] and t["answer"] for t in payload["tasks"])
 
 
+def test_a_staged_round_publishes_the_papers_its_tasks_rest_on(tmp_path):
+    """Miners do not get the exam corpus, so a released round must carry the
+    papers its tasks cite, or nobody outside the validator could re-grade it.
+    A paper the corpus cannot return is left out, never invented."""
+    import json
+
+    h = _sealed_release_harness(tmp_path)
+    tasks = h.service._public_tasks(seed=5, n=10)
+    cited = sorted({d for t in tasks for d in t.evidence_doc_ids})
+    missing, present = cited[0], cited[1:]
+    h.service.deps.corpus = FakeCorpus({d: f"text of {d}" for d in present})
+
+    h.service._stage_public_pool_round(7, tasks)
+
+    staged = next(h.service.audit_log.delayed_dir.glob("*publicpool-round000007*"))
+    evidence = json.loads(staged.read_text())["evidence"]
+    assert set(evidence) == set(present)
+    assert evidence[present[0]]["text"] == f"text of {present[0]}"
+    assert missing not in evidence
+
+
 def test_a_round_is_not_published_before_its_delay_elapses(tmp_path):
     """Releasing immediately would hand the next challenger a live answer key."""
     h = _sealed_release_harness(tmp_path)

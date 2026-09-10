@@ -1380,6 +1380,7 @@ class ValidatorService:
                     task_ids_digest=digest,
                     pool_digest_value=getattr(self.cfg.eval, "public_pool_digest", ""),
                     manifest_digest=getattr(self.cfg.eval, "public_pool_manifest_digest", ""),
+                    evidence=self._evidence_papers(public_tasks),
                 ),
                 self.deps.clock() + constants.AUDIT_PUBLISH_DELAY_BLOCKS,
             )
@@ -1395,6 +1396,30 @@ class ValidatorService:
         served = set(self.state.served_public_task_ids)
         served.update(getattr(t, "task_id", str(t)) for t in public_tasks)
         self.state.served_public_task_ids = sorted(served)
+
+    def _evidence_papers(self, tasks: list) -> dict[str, dict]:
+        """The papers a round's tasks rest on, as its round file publishes them.
+
+        Looked up in the pinned corpus by the ids each task already records. A
+        paper the corpus cannot return is left out rather than invented; the
+        task still lists its id, so an auditor sees exactly what is missing.
+        """
+        corpus = self.deps.corpus
+        papers: dict[str, dict] = {}
+        if corpus is None:
+            return papers
+        for task in tasks:
+            for doc_id in getattr(task, "evidence_doc_ids", ()):
+                if doc_id in papers:
+                    continue
+                doc = corpus.get(doc_id)
+                if doc is not None:
+                    papers[doc_id] = {
+                        "title": getattr(doc, "title", ""),
+                        "url": getattr(doc, "url", ""),
+                        "text": getattr(doc, "text", ""),
+                    }
+        return papers
 
     def _pool_file(self, configured: str) -> Path | None:
         """Where this box keeps a sealed-pool file.

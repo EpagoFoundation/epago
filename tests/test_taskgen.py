@@ -1144,3 +1144,26 @@ def test_a_round_payload_does_not_depend_on_draw_order(tmp_path):
         manifest_digest=manifest_digest,
     )
     assert round_payload(drawn, **kwargs) == round_payload(list(reversed(drawn)), **kwargs)
+
+
+def test_a_round_payload_carries_evidence_only_when_given(tmp_path):
+    """The evidence key is additive: files written without it, and every reader
+    of the tasks, stay exactly as they were."""
+    from epago.taskgen.sealed_pool import load_round_file, round_payload, select
+
+    tasks, digest, _, manifest_digest = _sealed_pool(tmp_path, n=1000)
+    drawn = select(tasks, 3, 5)
+    kwargs = {
+        "round_no": 1,
+        "task_ids_digest": task_ids_digest(drawn),
+        "pool_digest_value": digest,
+        "manifest_digest": manifest_digest,
+    }
+    assert "evidence" not in json.loads(round_payload(drawn, **kwargs))
+
+    paper = {"title": "t", "url": "https://doi.org/10.1/x", "text": "abstract"}
+    rich = round_payload(drawn, evidence={"doc-1": paper}, **kwargs)
+    assert json.loads(rich)["evidence"] == {"doc-1": paper}
+    path = tmp_path / "round.json"
+    path.write_text(rich)
+    assert {t.task_id for t in load_round_file(path)} == {t.task_id for t in drawn}
