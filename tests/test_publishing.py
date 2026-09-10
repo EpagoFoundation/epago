@@ -83,6 +83,16 @@ def state_dir(tmp_path: Path) -> Path:
     return sd
 
 
+def test_published_state_goes_to_the_public_bucket(monkeypatch):
+    """Everything the publisher ships is meant for anyone -- so it goes to the
+    public bucket, never the one miners' private uploads sit in."""
+    from epago.publishing import publisher as publisher_mod
+
+    monkeypatch.setenv("EPAGO_S3_BUCKET", "epago-submissions")
+    monkeypatch.setenv("EPAGO_PUBLIC_BUCKET", "epago-public")
+    assert publisher_mod._make_store().bucket == "epago-public"
+
+
 # --- StatePublisher.sync -----------------------------------------------------------
 
 REPO = "val/epago-state"

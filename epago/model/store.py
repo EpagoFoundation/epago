@@ -218,10 +218,10 @@ def _check_hf_repo_size(ref: ModelRef, revision: str, api) -> None:
 
 
 def _materialize_oci(ref: ModelRef, target: Path) -> None:
-    """Download a ``sha256:`` snapshot from the object store."""
-    from epago.model.objectstore import ObjectStore  # lazy: boto3 is a chain extra
+    """Download a ``sha256:`` snapshot from the bucket its key belongs in."""
+    from epago.model.objectstore import store_for  # lazy: boto3 is a chain extra
 
-    ObjectStore().download_snapshot(ref.repo, ref.digest, target)
+    store_for(ref.repo).download_snapshot(ref.repo, ref.digest, target)
 
 
 def _verify(ref: ModelRef, target: Path) -> None:
@@ -244,9 +244,9 @@ def upload_model_folder(folder: Path, repo: str, backend: str = "hf") -> ModelRe
     on the object store and pins the resulting ``sha256:`` digest.
     """
     if backend == "oci":
-        from epago.model.objectstore import ObjectStore  # lazy: boto3 is a chain extra
+        from epago.model.objectstore import store_for  # lazy: boto3 is a chain extra
 
-        digest = ObjectStore().upload_snapshot(repo, folder)
+        digest = store_for(repo).upload_snapshot(repo, folder)
         return ModelRef(repo=repo, digest=digest)
     if backend != "hf":
         raise ModelStoreError(f"unknown backend {backend!r} (expected 'hf' or 'oci')")

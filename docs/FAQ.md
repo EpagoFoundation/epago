@@ -154,6 +154,10 @@ pool, plus whatever the king's decay releases. The king still earns the large ma
 but only while defending against a live challenger ecosystem, which the schedule itself
 funds.
 
+For now mainnet runs a fixed burn instead: 95% of the miner emission burns and the
+king earns the other 5%, with no arena (`burn_share` in `chain.toml`; 0 restores the
+schedule above).
+
 ### What happens if the king's repo disappears?
 
 Nothing. Every validator materialized the king's snapshot to duel it and re-pins

@@ -268,6 +268,45 @@ def test_miner_cli_help_smoke():
         assert command in result.output
 
 
+def test_upload_passes_the_session_token(tmp_path, monkeypatch):
+    """The scoped JWT lives in the session token; an upload that drops it signs
+    with a secret R2 cannot verify, so every private submission was refused."""
+    from epago.miner.cli import app
+    from epago.model import objectstore
+
+    seen: dict = {}
+
+    class RecordingStore:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+        def upload_snapshot(self, repo, folder):
+            return "sha256:" + "ab" * 32
+
+    monkeypatch.setattr(objectstore, "ObjectStore", RecordingStore)
+    auth = tmp_path / "upload-auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "endpoint": "https://acct.r2.cloudflarestorage.com",
+                "bucket": "b",
+                "prefix": "submissions/hk/",
+                "access_key": "ak",
+                "secret_key": "sk",
+                "session_token": "tok",
+                "expires_at": 0,
+            }
+        )
+    )
+    model = tmp_path / "model"
+    model.mkdir()
+
+    result = CliRunner().invoke(app, ["upload", "--folder", str(model), "--auth-file", str(auth)])
+
+    assert result.exit_code == 0, result.output
+    assert seen["session_token"] == "tok"
+
+
 def test_miner_submit_dry_run_prints_payload():
     from neurons.miner import app
 

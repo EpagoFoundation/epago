@@ -6,17 +6,18 @@ credential has to be narrow: one miner must not be able to read, overwrite or
 delete another's submission.
 
 R2 mints these without a network round trip. The validator holds one **parent
-token** for the bucket, and derives a per-miner credential by signing a JWT with
-the parent secret: the token names the bucket, the one prefix it may touch, an
-expiry, and an explicit list of permitted actions. The gateway validates that
-signature itself, so issuing a credential is pure computation — no API call, no
-rate limit, no failure mode between deciding to issue and being able to.
+token** for the submissions bucket, and derives a per-miner credential by
+signing a JWT with the parent secret: the token names the bucket, the one
+prefix it may touch, and an expiry. The gateway validates that signature
+itself, so issuing a credential is pure computation -- no API call, no rate
+limit, no failure mode between deciding to issue and being able to.
 
-**The action list is write-only on purpose.** Upload and multipart operations
-only: no ``GetObject``, no ``ListObjectsV2``, not even within the miner's own
-prefix. A miner does not need to read back what it just wrote, and a credential
-that cannot read is a credential that cannot exfiltrate — a leaked one can only
-add bytes to one prefix until it expires.
+**The prefix is the boundary.** R2 rejects a JWT that carries an explicit
+``actions`` list -- every request with such a key failed with
+``InvalidArgument``, even inside the miner's own prefix -- so there is no
+write-only credential. A miner's key can write, read, list and delete inside
+its own prefix; another miner's prefix, a listing of the bucket and every
+other bucket are refused. Both measured against R2.
 
 Nothing here talks to Cloudflare, so it is testable without an account and
 cannot log a secret it never fetched.
@@ -34,17 +35,6 @@ from urllib.parse import urlparse
 
 #: R2's own ceiling on a temporary credential's lifetime (7 days).
 MAX_TTL_SECONDS = 604_800
-
-#: Exactly what a miner needs to upload a checkpoint, and nothing else.
-#: Reading is absent deliberately: see the module docstring.
-UPLOAD_ACTIONS = (
-    "PutObject",
-    "CreateMultipartUpload",
-    "UploadPart",
-    "CompleteMultipartUpload",
-    "AbortMultipartUpload",
-    "ListParts",
-)
 
 #: The scope name R2 expects for prefix-restricted object credentials.
 PREFIX_SCOPE = "object-read-write"
@@ -90,10 +80,9 @@ def mint_upload_credentials(
     bucket: str,
     prefix: str,
     ttl_seconds: int,
-    actions: tuple[str, ...] = UPLOAD_ACTIONS,
     issued_at_unix: int | None = None,
 ) -> TemporaryCredentials:
-    """Derive a credential that may only write under ``prefix``.
+    """Derive a credential that may only touch ``prefix``.
 
     Every argument is validated before anything is signed. A malformed prefix
     is the dangerous case: an empty or absolute one would widen the credential
@@ -114,8 +103,6 @@ def mint_upload_credentials(
         raise ValueError(f"prefix {prefix!r} must end with '/' so it cannot match a sibling")
     if not 1 <= ttl_seconds <= MAX_TTL_SECONDS:
         raise ValueError(f"ttl must be between 1 and {MAX_TTL_SECONDS} seconds")
-    if not actions:
-        raise ValueError("an empty action list would grant nothing")
 
     issued_at = int(time.time()) if issued_at_unix is None else int(issued_at_unix)
     expires_at = issued_at + int(ttl_seconds)
@@ -130,7 +117,6 @@ def mint_upload_credentials(
         "paths": {"objectPaths": [], "prefixPaths": [prefix]},
         "scope": PREFIX_SCOPE,
         "sub": account_id,
-        "actions": list(actions),
     }
     signing_input = (
         _b64url(json.dumps(header, sort_keys=True, separators=(",", ":")).encode())

@@ -46,6 +46,39 @@ def _model_dir(tmp_path: Path) -> Path:
     return src
 
 
+def test_a_session_token_reaches_the_s3_client(monkeypatch) -> None:
+    """A miner's credential is temporary: its secret is derived from a scoped JWT
+    that R2 reads from the session token. Dropping the token turned every private
+    upload into a 403."""
+    import sys
+    import types
+
+    seen: dict = {}
+    boto3 = types.ModuleType("boto3")
+    boto3.client = lambda *a, **kw: seen.update(kw) or object()
+    botocore = types.ModuleType("botocore")
+    botocore_config = types.ModuleType("botocore.config")
+    botocore_config.Config = lambda **kw: kw
+    monkeypatch.setitem(sys.modules, "boto3", boto3)
+    monkeypatch.setitem(sys.modules, "botocore", botocore)
+    monkeypatch.setitem(sys.modules, "botocore.config", botocore_config)
+    endpoint = "https://acct.r2.cloudflarestorage.com"
+
+    ObjectStore(bucket="b", endpoint=endpoint, access_key="ak", secret_key="sk",
+                session_token="tok").client()
+    assert seen["aws_session_token"] == "tok"
+
+    seen.clear()
+    monkeypatch.setenv("EPAGO_S3_SESSION_TOKEN", "env-tok")
+    ObjectStore(bucket="b", endpoint=endpoint).client()
+    assert seen["aws_session_token"] == "env-tok"
+
+    seen.clear()
+    monkeypatch.delenv("EPAGO_S3_SESSION_TOKEN")
+    ObjectStore(bucket="b", endpoint=endpoint, access_key="ak", secret_key="sk").client()
+    assert seen["aws_session_token"] is None  # long-lived keys still sign on their own
+
+
 def test_upload_is_content_addressed_and_matches_snapshot_digest(tmp_path) -> None:
     src = _model_dir(tmp_path)
     s3 = FakeS3()
@@ -90,6 +123,43 @@ def test_upload_model_folder_oci_backend_routes_to_the_object_store(tmp_path, mo
     assert ref.backend == "oci"
     assert ref.repo == "org/EPAGO-DR-4B-y"
     assert ref.digest == snapshot_digest(src)
+
+
+def test_submissions_stay_private_and_everything_else_goes_public(monkeypatch) -> None:
+    """R2 makes a whole bucket public or none of it, and a private submission's
+    key is on chain in its reveal. Published artifacts get their own bucket, so
+    a checkpoint that has not won cannot be fetched by a rival."""
+    from epago.chain.mailbox import submission_prefix
+    from epago.model.objectstore import SUBMISSIONS_PREFIX, public_store, store_for
+
+    monkeypatch.setenv("EPAGO_S3_BUCKET", "epago-submissions")
+    monkeypatch.setenv("EPAGO_PUBLIC_BUCKET", "epago-public")
+    assert submission_prefix("5Hk").startswith(SUBMISSIONS_PREFIX)
+    assert store_for(submission_prefix("5Hk") + "model").bucket == "epago-submissions"
+    for published in ("kings/abc", "val/state/publications/mailbox/credentials.json"):
+        assert store_for(published).bucket == "epago-public"
+    assert public_store().bucket == "epago-public"
+
+    monkeypatch.delenv("EPAGO_PUBLIC_BUCKET")  # one bucket for everything, as before
+    assert store_for("kings/abc").bucket == "epago-submissions"
+
+
+def test_a_crowned_model_is_fetched_from_the_public_bucket(tmp_path, monkeypatch) -> None:
+    from epago.core.types import ModelRef
+    from epago.model import store
+
+    monkeypatch.setenv("EPAGO_S3_BUCKET", "epago-submissions")
+    monkeypatch.setenv("EPAGO_PUBLIC_BUCKET", "epago-public")
+    seen: list[tuple[str, str]] = []
+
+    def record(self, repo, digest, target):
+        seen.append((self.bucket, repo))
+
+    monkeypatch.setattr(ObjectStore, "download_snapshot", record)
+    sha = "sha256:" + "a" * 64
+    store._materialize_oci(ModelRef(repo="kings/abc", digest=sha), tmp_path)
+    store._materialize_oci(ModelRef(repo="submissions/5Hk/model", digest=sha), tmp_path)
+    assert seen == [("epago-public", "kings/abc"), ("epago-submissions", "submissions/5Hk/model")]
 
 
 def test_upload_model_folder_rejects_unknown_backend(tmp_path) -> None:

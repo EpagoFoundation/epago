@@ -10,7 +10,6 @@ is trusted without being re-derived.
 
 from __future__ import annotations
 
-import base64
 import json
 from collections import Counter
 
@@ -1021,28 +1020,30 @@ def test_a_mailbox_is_written_atomically(tmp_path):
     assert Mailbox.from_json(path.read_text()).digest() == digest
 
 
-# --- credentials are scoped, expiring and write-only -------------------------
+# --- credentials are scoped to one prefix and expire -------------------------
 
 
 def _mint(**over):
     from epago.chain.credentials import mint_upload_credentials
 
-    kwargs = dict(
-        endpoint="https://acct.r2.cloudflarestorage.com",
-        account_id="acct",
-        parent_access_key_id="parent-key",
-        parent_secret_access_key="parent-secret",
-        bucket="epago",
-        prefix="submissions/hk-alice/",
-        ttl_seconds=3600,
-        issued_at_unix=1_000_000,
-    )
+    kwargs = {
+        "endpoint": "https://acct.r2.cloudflarestorage.com",
+        "account_id": "acct",
+        "parent_access_key_id": "parent-key",
+        "parent_secret_access_key": "parent-secret",
+        "bucket": "epago",
+        "prefix": "submissions/hk-alice/",
+        "ttl_seconds": 3600,
+        "issued_at_unix": 1_000_000,
+    }
     kwargs.update(over)
     return mint_upload_credentials(**kwargs)
 
 
 def _claims(creds):
     """The JWT claims R2 will enforce, read back from the session token."""
+    import base64
+
     raw = base64.b64decode(creds.session_token).decode().removeprefix("jwt/")
     payload = raw.split(".")[1]
     payload += "=" * (-len(payload) % 4)
@@ -1055,32 +1056,22 @@ def test_a_credential_is_confined_to_one_prefix():
     assert claims["paths"]["prefixPaths"] == ["submissions/hk-alice/"]
     assert claims["paths"]["objectPaths"] == []
     assert claims["bucket"] == "epago"
+    assert claims["scope"] == "object-read-write"
 
 
-def test_a_credential_cannot_read_anything_not_even_its_own_prefix():
-    """Write-only by design.
-
-    A miner never needs to read back what it just uploaded, and a credential
-    that cannot read cannot exfiltrate: a leaked one can only add bytes to one
-    prefix until it expires.
-    """
-    actions = set(_claims(_mint())["actions"])
-    assert "PutObject" in actions
-    assert "CompleteMultipartUpload" in actions
-    for forbidden in ("GetObject", "ListObjectsV2", "DeleteObject", "CopyObject"):
-        assert forbidden not in actions
+def test_a_credential_carries_no_action_list():
+    """R2 rejects a JWT with an explicit `actions` claim: every request with
+    such a key failed with InvalidArgument, even in the miner's own prefix."""
+    assert "actions" not in _claims(_mint())
 
 
 def test_a_prefix_that_could_match_a_sibling_is_refused():
     """"submissions/hk-a" would also cover "submissions/hk-abc"."""
-    from epago.chain.credentials import mint_upload_credentials
-
     with pytest.raises(ValueError, match="must end with"):
         _mint(prefix="submissions/hk-alice")
     for bad in ("", "/absolute/", "../escape/"):
         with pytest.raises(ValueError):
             _mint(prefix=bad)
-    assert mint_upload_credentials  # imported for the error path above
 
 
 def test_a_credential_expires():
@@ -1105,6 +1096,7 @@ def test_two_miners_get_different_credentials_from_the_same_parent():
 
 def test_tampering_with_the_scope_invalidates_the_signature():
     """R2 verifies the JWT, so a miner cannot widen its own credential."""
+    import base64
     import hashlib
     import hmac
 

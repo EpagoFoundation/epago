@@ -360,6 +360,17 @@ def scan_and_enqueue(
             )
             continue
 
+        # A contract that takes private submissions only refuses a public one:
+        # its weights were readable by every rival the moment it was revealed.
+        # A property of the reveal itself, so it is remembered like one.
+        if cfg.chain.private_submissions_only and reveal.challenger.backend == "hf":
+            detail = "this subnet takes private submissions only; upload with `epago miner upload`"
+            state.seen_digests.setdefault(digest, hotkey)
+            state.statuses[digest] = SubmissionStatus.FAILED_INTAKE.value
+            state.record_failure(digest, "public_submission", detail, current_block)
+            reject(reveal, SubmissionStatus.FAILED_INTAKE, "public_submission", detail)
+            continue
+
         if reveal.king_digest != current_king_digest:
             state.seen_digests.setdefault(digest, hotkey)
             state.statuses[digest] = SubmissionStatus.STALE_PARENT.value

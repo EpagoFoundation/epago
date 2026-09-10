@@ -500,8 +500,14 @@ def _emissions(state: dict, block: int, cfg: EpagoConfig) -> dict:
         constants.PHASE_B_MIN_DETHRONES,
         constants.PHASE_B_MIN_BLOCKS,
     )
-    if not king or not king.get("author_hotkey") or not phase_b:
+    fixed_burn = e.burn_share > 0
+    if not king or not king.get("author_hotkey") or not (phase_b or fixed_burn):
         return {"king": 0.0, "arena": 0.0, "burn": 1.0}
+    if fixed_burn:
+        # compute_weights under a fixed burn: the king takes what the burn
+        # leaves, flat, and the arena is off.
+        split = {"king": 1.0 - e.burn_share, "arena": 0.0, "burn": e.burn_share}
+        return {**split, "configured": dict(split)}
     reign_age = max(block - king.get("reign_started_block", block), 0)
     decay = reign_decay_factor(reign_age, e.reign_halflife_blocks)
     bonus = coronation_bonus_factor(

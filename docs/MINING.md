@@ -35,6 +35,51 @@ into scored answers before any capability gain is needed.
 Read the [mechanism spec](DESIGN.md) once; every number below comes from it, and the
 code is the final authority.
 
+## Practice corpus
+
+The exam's 50,420 papers are not handed to miners, on purpose. With the exam's own
+library and the public task minter, a checkpoint could be trained on the sealed pool's
+questions before they are ever asked, and the crown would measure memory rather than
+research. What you are training is the procedure, and the procedure transfers from any
+library of papers — so you get a separate one.
+
+**The practice corpus** is nearly half a million science papers — titles and abstracts
+from Crossref, Europe PMC and PubMed — in exactly the exam corpus's format, with **no
+paper in common** with the exam corpus or the current private holdout (checked by
+document id, by DOI / OpenAlex / PubMed id, by title and by abstract). It is public, and
+versioned so a later release never overwrites this one:
+
+| File | What it is |
+|---|---|
+| [`corpus.db`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/corpus.db) | the library: the same SQLite format and search index the validator's tools read |
+| [`entities-v1.json`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/entities-v1.json) | the entity index the task minter draws from |
+| [`manifest.json`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/manifest.json) | paper counts, sources, and the sha256 digest of each file |
+| [`README.md`](https://pub-d9173201318242cd90f3632eb5615a61.r2.dev/practice-v1/README.md) | how it was built and how to use it |
+
+Check a download against the manifest before training on it: `sha256sum corpus.db` must
+equal `corpus_digest` without its `sha256:` prefix, and the same for `entities_digest`.
+
+**Mint practice tasks** of the exam's kind with the minter the pools come from, then keep
+only those that pass every check a pool task must pass:
+
+```bash
+python scripts/mint_intersections.py --corpus practice-v1/corpus.db \
+    --index practice-v1/entities-v1.json --out practice-tasks.jsonl --n 500
+python scripts/verify_pool.py --tasks practice-tasks.jsonl --corpus practice-v1/corpus.db \
+    --index practice-v1/entities-v1.json --write-passing practice-sound.jsonl
+```
+
+The minter's last stage phrases each question with a model through OpenRouter
+(`OPENROUTER_API_KEY`; `--model` picks it, default `google/gemini-2.5-flash`).
+
+**Run a checkpoint with the validator's own tools** by pointing them at the practice
+library: `epago eval serve --corpus practice-v1/corpus.db` serves the same search-and-read
+harness a duel runs.
+
+**Real exam questions** follow every round: once its embargo ends, the round's file is
+published with its tasks and the papers they cite. Those tasks are retired — no later
+round asks them again — so they are study material, not an answer key.
+
 ## Lifecycle
 
 ```mermaid
@@ -60,7 +105,7 @@ flowchart TD
 | 2 | **Prepare** | `epago miner prepare <out_dir>` materializes the king locally and copies it into your challenger folder. Confirm your target repo name matches the intake rules (below) *before* you train, not after. |
 | 3 | **Train** | However you like. Keep the architecture identical: every config-lock key must match the king byte-for-byte. |
 | 4 | **Preflight** | `epago miner preflight <challenger_dir> <king_dir> --repo <repo> --hotkey <ss58>` runs the exact checks a validator runs at intake — repo pattern, hotkey prefix, file hygiene, config lock, size cap, exact-copy check — with the same machine-readable failure codes. A submission that fails preflight will fail intake; there is no validator-side leniency. |
-| 5 | **Upload** | Push the folder to your repo. The upload returns a revision hash; your model reference is `hf:<revision>` — an immutable, content-addressed pin. Editing the repo afterwards changes nothing: only the pinned revision is evaluated. |
+| 5 | **Upload** | Upload privately into the validator's bucket with `epago miner auth` and `epago miner upload` (see [Where your model lives](#where-your-model-lives)). Your model reference is the printed `sha256:` digest — an immutable, content-addressed pin. Where a contract also takes public submissions you may instead push to a Hugging Face repo and pin `hf:<revision>`; mainnet does not. |
 | 6 | **Reveal** | `epago miner submit --repo <repo> --digest <digest> --king-digest <king_digest>` commits the payload `e2\|<king_digest>\|<your_repo>\|<your_digest>` through the timelock commit-reveal extrinsic. Your hotkey is not in the payload — the chain records who signed, and that is your authorship. It auto-reveals 5 blocks later, chain-stamped with its reveal block. Only your latest reveal counts; revealing again supersedes the previous one. |
 | 7 | **Wait for a round** | Submissions queue. Every ~2 days the round authority opens a competition; your challenge enters the first round whose trigger lands *after* your reveal. |
 | 8 | **Duel** | The whole field answers one exam against the king; each validator runs intake, probes, then the paired duel (800 public + 200 private tasks). The provisional winner is re-dueled once on a fresh exam and must clear the floor **twice** before its ACCEPT is committed (an unconfirmed win settles as a near-miss — the re-duel right stays intact). Each validator commits an `ev3` verdict per entrant; only the confirmed best entrant gets an ACCEPT. |
@@ -76,6 +121,7 @@ Your submission is rejected before any GPU time if it violates any of these:
 
 | Check | Rule |
 |---|---|
+| **Private only** | Mainnet takes private submissions only: a public `hf:` reveal is refused (`public_submission`). A private one must sit under your own `submissions/<hotkey>/` prefix, and your hotkey must be Ed25519. |
 | **Repo name** | Matches `^[^/]+/EPAGO-DR-30B-.+$` **and** contains the first 8 characters of your hotkey (case-insensitive). Example: hotkey `5FHneW46...` → `myorg/EPAGO-DR-30B-5fhnew46-run7`. |
 | **Fresh parent** | The `king_digest` in your reveal must be the reigning king. If the king changes between your training run and your reveal, you are dropped as `stale_parent` — re-verify before revealing. |
 | **Config lock** | `config.json` matches the king on all locked keys (architecture, sizes, heads, rope settings, embedding tying, context length — full list in the spec). `auto_map` is forbidden. |
@@ -137,28 +183,35 @@ Requires an **Ed25519 hotkey**, because the validator encrypts your upload
 credentials to it and ordinary sr25519 hotkeys have no encryption:
 
 ```bash
-btcli wallet new-hotkey --wallet.name <wallet> --wallet.hotkey <hk> --key-type ed25519
+btcli wallet new-hotkey --wallet-name <wallet> --hotkey <hk> --crypto-type ed25519
 ```
 
-Then, once your hotkey is registered on the subnet:
+The `epago` command comes with this repository (`pip install -e ".[chain]"`).
+Once your hotkey is registered on the subnet, and with the mailbox URL the subnet
+announces when mining opens:
 
 ```bash
-epago-miner auth   --mailbox <validator mailbox URL> --wallet-name <wallet> --wallet-hotkey <hk>
-epago-miner upload --folder ./checkpoint
-epago-miner submit --repo <printed repo> --digest <printed sha256:...> --king-digest <king>
+epago miner auth   --mailbox <mailbox URL> --wallet-name <wallet> --wallet-hotkey <hk>
+epago miner upload --folder ./checkpoint
+epago miner submit --repo <printed repo> --digest <printed sha256:...> --king-digest <king> \
+    --wallet-name <wallet> --wallet-hotkey <hk>
 ```
 
-`auth` reads a **public** file containing one envelope per miner and opens the
-one addressed to you. Everyone can read that file; only your hotkey opens your
-entry, and the payload is signed so you can tell a real credential from a
-forgery pointing at someone else's bucket.
+`auth` reads a **public** file containing one envelope per registered miner and
+opens the one addressed to you. Everyone can read that file; only your hotkey
+opens your entry. The validator refreshes it about every two hours, so a newly
+registered hotkey may wait that long for its first envelope.
 
-Your credentials are **write-only and scoped to your own prefix**. You cannot
-read, list or overwrite anything — not even your own upload. That is
-deliberate: a credential that cannot read cannot leak anything if it is stolen.
-They expire after a few hours; re-run `auth` if an upload spans longer.
+Your credentials are **scoped to your own prefix**: you can write, read back and
+delete your own upload, and nothing else — not another miner's folder, not a
+listing of the bucket. They expire after a few hours; re-run `auth` if an upload
+spans longer.
 
 ### Public
+
+**Not accepted on mainnet.** Its contract sets `private_submissions_only`, and
+intake refuses a public submission (`public_submission`). Where a contract does
+take them:
 
 Push to a Hugging Face repo you own matching `^[^/]+/EPAGO-DR-30B-.+$` and
 submit `hf:<revision>`. Validators fetch that exact revision with no token, so
@@ -212,7 +265,9 @@ Losing with `lcb_pub > 0` — you are probably better, just not provably by
   not require a second hotkey.
 
 A near-miss does not earn emission. The arena pays former kings, not
-challengers — see the emissions section of the whitepaper.
+challengers — see the emissions section of the whitepaper. While mainnet runs
+its fixed burn (95% burned, 5% to the king) there is no arena: only the king
+earns.
 
 ## No bonds
 
