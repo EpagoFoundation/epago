@@ -364,7 +364,7 @@ def scan_and_enqueue(
         # its weights were readable by every rival the moment it was revealed.
         # A property of the reveal itself, so it is remembered like one.
         if cfg.chain.private_submissions_only and reveal.challenger.backend == "hf":
-            detail = "this subnet takes private submissions only; upload with `epago-miner upload`"
+            detail = "this subnet takes private submissions only; upload with `epago miner upload`"
             state.seen_digests.setdefault(digest, hotkey)
             state.statuses[digest] = SubmissionStatus.FAILED_INTAKE.value
             state.record_failure(digest, "public_submission", detail, current_block)

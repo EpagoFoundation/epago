@@ -105,7 +105,7 @@ flowchart TD
 | 2 | **Prepare** | `epago miner prepare <out_dir>` materializes the king locally and copies it into your challenger folder. Confirm your target repo name matches the intake rules (below) *before* you train, not after. |
 | 3 | **Train** | However you like. Keep the architecture identical: every config-lock key must match the king byte-for-byte. |
 | 4 | **Preflight** | `epago miner preflight <challenger_dir> <king_dir> --repo <repo> --hotkey <ss58>` runs the exact checks a validator runs at intake — repo pattern, hotkey prefix, file hygiene, config lock, size cap, exact-copy check — with the same machine-readable failure codes. A submission that fails preflight will fail intake; there is no validator-side leniency. |
-| 5 | **Upload** | Upload privately into the validator's bucket with `epago-miner auth` and `epago-miner upload` (see [Where your model lives](#where-your-model-lives)). Your model reference is the printed `sha256:` digest — an immutable, content-addressed pin. Where a contract also takes public submissions you may instead push to a Hugging Face repo and pin `hf:<revision>`; mainnet does not. |
+| 5 | **Upload** | Upload privately into the validator's bucket with `epago miner auth` and `epago miner upload` (see [Where your model lives](#where-your-model-lives)). Your model reference is the printed `sha256:` digest — an immutable, content-addressed pin. Where a contract also takes public submissions you may instead push to a Hugging Face repo and pin `hf:<revision>`; mainnet does not. |
 | 6 | **Reveal** | `epago miner submit --repo <repo> --digest <digest> --king-digest <king_digest>` commits the payload `e2\|<king_digest>\|<your_repo>\|<your_digest>` through the timelock commit-reveal extrinsic. Your hotkey is not in the payload — the chain records who signed, and that is your authorship. It auto-reveals 5 blocks later, chain-stamped with its reveal block. Only your latest reveal counts; revealing again supersedes the previous one. |
 | 7 | **Wait for a round** | Submissions queue. Every ~2 days the round authority opens a competition; your challenge enters the first round whose trigger lands *after* your reveal. |
 | 8 | **Duel** | The whole field answers one exam against the king; each validator runs intake, probes, then the paired duel (800 public + 200 private tasks). The provisional winner is re-dueled once on a fresh exam and must clear the floor **twice** before its ACCEPT is committed (an unconfirmed win settles as a near-miss — the re-duel right stays intact). Each validator commits an `ev3` verdict per entrant; only the confirmed best entrant gets an ACCEPT. |
@@ -183,21 +183,24 @@ Requires an **Ed25519 hotkey**, because the validator encrypts your upload
 credentials to it and ordinary sr25519 hotkeys have no encryption:
 
 ```bash
-btcli wallet new-hotkey --wallet.name <wallet> --wallet.hotkey <hk> --key-type ed25519
+btcli wallet new-hotkey --wallet-name <wallet> --hotkey <hk> --crypto-type ed25519
 ```
 
-Then, once your hotkey is registered on the subnet:
+The `epago` command comes with this repository (`pip install -e ".[chain]"`).
+Once your hotkey is registered on the subnet, and with the mailbox URL the subnet
+announces when mining opens:
 
 ```bash
-epago-miner auth   --mailbox <validator mailbox URL> --wallet-name <wallet> --wallet-hotkey <hk>
-epago-miner upload --folder ./checkpoint
-epago-miner submit --repo <printed repo> --digest <printed sha256:...> --king-digest <king>
+epago miner auth   --mailbox <mailbox URL> --wallet-name <wallet> --wallet-hotkey <hk>
+epago miner upload --folder ./checkpoint
+epago miner submit --repo <printed repo> --digest <printed sha256:...> --king-digest <king> \
+    --wallet-name <wallet> --wallet-hotkey <hk>
 ```
 
-`auth` reads a **public** file containing one envelope per miner and opens the
-one addressed to you. Everyone can read that file; only your hotkey opens your
-entry, and the payload is signed so you can tell a real credential from a
-forgery pointing at someone else's bucket.
+`auth` reads a **public** file containing one envelope per registered miner and
+opens the one addressed to you. Everyone can read that file; only your hotkey
+opens your entry. The validator refreshes it about every two hours, so a newly
+registered hotkey may wait that long for its first envelope.
 
 Your credentials are **scoped to your own prefix**: you can write, read back and
 delete your own upload, and nothing else — not another miner's folder, not a
