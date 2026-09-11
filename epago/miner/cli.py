@@ -312,6 +312,7 @@ def upload(
         region=credentials.get("region"),
         access_key=credentials.get("access_key"),
         secret_key=credentials.get("secret_key"),
+        session_token=credentials.get("session_token"),
     )
     repo = f"{prefix}/{name}"
     try:
@@ -323,4 +324,5 @@ def upload(
     typer.echo(f"digest: {digest}")
     typer.echo("")
     typer.echo("submit it with:")
-    typer.echo(f"  epago-miner submit --repo {repo} --digest {digest} --king-digest <king>")
+    typer.echo(f"  epago miner submit --repo {repo} --digest {digest} --king-digest <king> \\")
+    typer.echo("      --wallet-name <wallet> --wallet-hotkey <hk>")

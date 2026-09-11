@@ -17,6 +17,8 @@ weight vectors. Design intent, encoded in the math:
   it steps back into the arena and keeps earning while the roster holds it.
   The roster is bounded at :data:`ARENA_MAX_KINGS`, so a king that has been
   displaced that many times leaves entirely.
+* A fixed burn (``burn_share`` above zero) replaces all of the above: the burn
+  key takes that share, the king the rest, and the arena nothing.
 """
 
 from __future__ import annotations
@@ -105,6 +107,13 @@ def compute_weights(
     if king is None:
         weights[burn_hotkey] = 1.0
         return weights
+
+    # A fixed burn replaces the schedule below: the king takes what the burn
+    # leaves, flat -- no reign band, no bonus -- and former kings earn nothing.
+    if cfg.burn_share > 0:
+        weights[burn_hotkey] = cfg.burn_share
+        weights[king.hotkey] = weights.get(king.hotkey, 0.0) + 1.0 - cfg.burn_share
+        return {h: w for h, w in weights.items() if w > 0}
 
     reign_age = max(current_block - king.reign_started_block, 0)
     base = king_share_at(reign_age, cfg)

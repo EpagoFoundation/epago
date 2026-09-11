@@ -360,6 +360,7 @@ def round_payload(
     task_ids_digest: str,
     pool_digest_value: str,
     manifest_digest: str,
+    evidence: dict[str, dict] | None = None,
 ) -> str:
     """The full text of the tasks one round asked, for auditors to re-grade.
 
@@ -374,20 +375,24 @@ def round_payload(
 
     Sorted by task id, so the file is a function of *which* tasks were asked
     rather than of the order they happened to be drawn in.
+
+    ``evidence`` carries the papers those tasks rest on — title, url and text,
+    by doc id — so a released round can be re-graded without the exam corpus,
+    which is not handed to miners. Only the asked tasks' papers go out, and
+    only once those tasks are retired. The key is absent when no evidence is
+    given, so older files and their readers stay valid.
     """
-    return json.dumps(
-        {
-            "format": ROUND_FORMAT,
-            "round": int(round_no),
-            "public_task_ids_digest": task_ids_digest,
-            "pool_digest": pool_digest_value,
-            "manifest_digest": manifest_digest,
-            "tasks": [_task_to_row(t) for t in sorted(tasks, key=lambda t: t.task_id)],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
+    payload = {
+        "format": ROUND_FORMAT,
+        "round": int(round_no),
+        "public_task_ids_digest": task_ids_digest,
+        "pool_digest": pool_digest_value,
+        "manifest_digest": manifest_digest,
+        "tasks": [_task_to_row(t) for t in sorted(tasks, key=lambda t: t.task_id)],
+    }
+    if evidence:
+        payload["evidence"] = evidence
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def load_round_file(path: str | Path) -> tuple[Task, ...]:

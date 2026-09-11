@@ -166,7 +166,10 @@ above or `EPAGO_EVAL_PUBLIC_POOL_PATH`.
 
 Two stores, split by who writes them: **Hugging Face holds what miners submit
 publicly; the object store (Cloudflare R2) holds everything the validator
-produces, plus private miner uploads.**
+produces, plus private miner uploads.** With `EPAGO_PUBLIC_BUCKET` set the object
+store is two buckets: miners' uploads (`submissions/`) stay in `EPAGO_S3_BUCKET`,
+which nobody else can read, and everything below that anyone may read goes to the
+public bucket (see [Enabling private submission](#enabling-private-submission)).
 
 Everything below is synced by `epago/publishing/publisher.py` under one
 namespace per validator:
@@ -287,18 +290,34 @@ EPAGO_S3_SECRET_KEY
 EPAGO_R2_ACCOUNT_ID        Cloudflare account id
 EPAGO_R2_PARENT_ACCESS_KEY a bucket-scoped R2 API token, created once
 EPAGO_R2_PARENT_SECRET_KEY
+EPAGO_PUBLIC_BUCKET        a second bucket, public, for everything published
 ```
 
-The parent token is created once through the Cloudflare API and scoped to the
-bucket. Per-miner credentials are then derived from it **locally**, by signing
-a JWT that names one prefix, an expiry, and a write-only action list. No API
-call per miner, so issuing credentials cannot fail between deciding to issue
-and being able to.
+**Keep the two buckets apart.** R2 makes a whole bucket public or none of it, and
+a private submission's key is written on chain in its reveal — so if uploads sat
+in a public bucket, anyone could fetch a checkpoint that has not won. Leave
+`EPAGO_S3_BUCKET` private and give `EPAGO_PUBLIC_BUCKET` public access (an r2.dev
+URL or a custom domain); the mailbox, crowned models, audit and round files go
+there. The validator's own token needs read and write on both buckets, the parent
+token on the submissions bucket only. The mailbox is written into the state
+directory and shipped by `epago publish watch` (below); miners read it at
+`<public URL>/<repo-id>/publications/mailbox/credentials.json`.
 
-Each credential can `PutObject` and complete a multipart upload, and nothing
-else. No `GetObject`, no `ListObjectsV2`, not even inside the miner's own
-prefix. A miner does not need to read back what it just wrote, and a credential
-that cannot read cannot exfiltrate if it leaks.
+To take private submissions **only**, set `private_submissions_only = true` under
+`[chain]` in the contract: intake then refuses a public `hf:` submission
+(`public_submission`). It is a contract setting rather than a per-box one,
+because validators that disagreed on it would split every verdict.
+
+The parent token is created once and scoped to the submissions bucket.
+Per-miner credentials are then derived from it **locally**, by signing a JWT
+that names one prefix and an expiry. No API call per miner, so issuing
+credentials cannot fail between deciding to issue and being able to.
+
+Each credential can write, read, list and delete inside its own prefix and
+nothing else: another miner's prefix, a listing of the bucket and the public
+bucket are all refused (measured against R2). The JWT carries no `actions`
+list, because R2 rejects that claim outright (`InvalidArgument`); a write-only
+credential is not available, so the prefix is the boundary.
 
 The mailbox is republished every `EPAGO_MAILBOX_INTERVAL_BLOCKS` (default 600),
 well inside the credential lifetime. Republishing too often would invalidate an

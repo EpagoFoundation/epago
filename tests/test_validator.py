@@ -212,7 +212,14 @@ def make_harness(
         )
     # Nothing is evaluated until the round authority opens a competition, so
     # every harness names one; `open_round` is what actually triggers a duel.
-    cfg = replace(cfg, chain=replace(cfg.chain, round_authority_hotkey=ROUND_AUTHORITY_HK))
+    # Its challengers are public `hf:` refs, so the harness takes both kinds of
+    # submission; the private-only rule has a test of its own.
+    cfg = replace(
+        cfg,
+        chain=replace(
+            cfg.chain, round_authority_hotkey=ROUND_AUTHORITY_HK, private_submissions_only=False
+        ),
+    )
     chain = MockChainClient(identity_hotkey=VALIDATOR_HK)
     chain.add_neuron(NeuronView(uid=0, hotkey="burn-hk", coldkey="burn-ck", stake=0.0, validator_permit=False))
     chain.add_neuron(NeuronView(uid=1, hotkey=VALIDATOR_HK, coldkey="ck-val-00", stake=100.0, validator_permit=True))
@@ -376,8 +383,25 @@ def _generator_release_harness(tmp_path, **kw):
     return h
 
 
-def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
+def _without_fixed_burn(h):
+    """The king-and-arena schedule, with the contract's fixed burn turned off."""
+    h.service.cfg = replace(h.cfg, emissions=replace(h.cfg.emissions, burn_share=0.0))
+    return h
+
+
+def test_a_fixed_burn_pays_the_king_from_its_coronation(tmp_path):
+    """The mainnet contract burns 95% and pays the king 5%, without waiting on Phase A."""
     h = make_harness(tmp_path)
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+
+    settle(h)
+
+    assert h.state.clean_duels < constants.PHASE_B_MIN_CLEAN_DUELS  # the gate is shut
+    assert h.chain.last_weights == pytest.approx({0: 0.95, 2: 0.05})
+
+
+def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
+    h = _without_fixed_burn(make_harness(tmp_path))
     digest, repo, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
 
     settle(h)
@@ -410,7 +434,7 @@ def test_genuine_improver_accept_coronation_phase_a_burn(tmp_path):
 
 
 def test_phase_b_weights_go_to_new_king(tmp_path):
-    h = make_harness(tmp_path)
+    h = _without_fixed_burn(make_harness(tmp_path))
     # Force the deterministic phase gate (counters + age).
     h.state.clean_duels = constants.PHASE_B_MIN_CLEAN_DUELS + 10
     h.state.organic_dethrones = constants.PHASE_B_MIN_DETHRONES
@@ -1663,6 +1687,21 @@ def test_a_public_submission_is_unaffected_by_the_prefix_rule(tmp_path):
     assert validate_submission_prefix(public, "hk-alice") is None
 
 
+def test_a_private_only_contract_refuses_a_public_submission(tmp_path):
+    """Mainnet takes private submissions only. A public `hf:` challenger showed
+    its weights to every rival the moment it was revealed, so intake refuses it
+    before anything is downloaded or dueled."""
+    h = make_harness(tmp_path)
+    h.service.cfg = replace(h.cfg, chain=replace(h.cfg.chain, private_submissions_only=True))
+    digest, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+
+    settle(h)
+
+    assert h.state.statuses[digest] == SubmissionStatus.FAILED_INTAKE.value
+    assert h.state.failure_memory[digest]["code"] == "public_submission"
+    assert h.holder["duel_specs"] == []
+
+
 def test_a_crowned_model_is_fetchable_from_its_public_location(tmp_path):
     """A challenger lives where only its author can write and only the scoring
     validator can read. That is correct while it is a challenger, and broken
@@ -1781,6 +1820,43 @@ def test_the_mailbox_is_not_reissued_on_every_tick(tmp_path, monkeypatch):
 
     h.service._maybe_publish_mailbox(1000 + 600)
     assert len(calls) == 2
+
+
+def test_a_published_mailbox_holds_a_working_credential_for_each_miner(tmp_path, monkeypatch):
+    """The validator's half of private upload, end to end: mint, seal, write.
+
+    A miner's envelope opens with its own key and carries a credential scoped
+    to its prefix, with no `actions` claim -- R2 refuses keys that carry one.
+    """
+    import base64
+    import json as _json
+
+    import nacl.signing
+
+    from epago.chain.envelope import open_envelope
+    from epago.chain.mailbox import MAILBOX_KEY, Mailbox, submission_prefix
+
+    monkeypatch.setenv("EPAGO_R2_PARENT_ACCESS_KEY", "parent")
+    monkeypatch.setenv("EPAGO_R2_PARENT_SECRET_KEY", "secret")
+    monkeypatch.setenv("EPAGO_R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("EPAGO_S3_BUCKET", "epago-submissions")
+    monkeypatch.setenv("EPAGO_S3_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
+    miner = nacl.signing.SigningKey.generate()
+    h = make_harness(tmp_path)
+    monkeypatch.setattr(
+        h.service, "_mailbox_recipients", lambda: {"hk-miner": bytes(miner.verify_key)}
+    )
+
+    h.service._maybe_publish_mailbox(h.chain.block)
+
+    box = Mailbox.from_json((h.state.state_dir / "publications" / MAILBOX_KEY).read_text())
+    creds = open_envelope(box.for_hotkey("hk-miner"), bytes(miner))
+    assert creds["bucket"] == "epago-submissions"
+    assert creds["prefix"] == submission_prefix("hk-miner")
+    payload = base64.b64decode(creds["session_token"]).decode().removeprefix("jwt/").split(".")[1]
+    claims = _json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert claims["paths"]["prefixPaths"] == [submission_prefix("hk-miner")]
+    assert "actions" not in claims
 
 
 def test_a_private_submission_needs_a_hotkey_credentials_can_be_sealed_to():
@@ -1903,9 +1979,63 @@ def _sealed_release_harness(tmp_path, n=40):
             public_pool_digest=digest,
             public_pool_manifest_path=str(tmp_path / "manifest.json"),
             public_pool_manifest_digest=manifest_digest,
+            taskgen_generator_release="SCI4",
         ),
     )
     return h
+
+
+def _generator_refusing_sealed_releases(*, seed, release, corpus, n, king_probe):
+    """The real generator's contract: a sealed release names no templates."""
+    if is_sealed_release(release):
+        raise ValueError(f"unknown taskgen release: {release!r}")
+    return [f"task-{seed % 997}-{i}" for i in range(4)]
+
+
+def test_a_sealed_release_confirms_and_crowns(tmp_path):
+    """Confirmation drew its exam from the generator, which cannot mint a POOL
+    release: every confirmation raised, every winner was demoted, and nothing
+    could ever be crowned. It now draws from the pool the way the round does --
+    a fresh exam that skips the round's own tasks -- and retires what it asked."""
+    h = _sealed_release_harness(tmp_path, n=constants.N_PUB_TASKS * 2)
+    h.service.deps.generate_tasks = _generator_refusing_sealed_releases
+    digest, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+
+    settle(h)
+
+    assert h.state.king.ref.digest == digest  # confirmed, and crowned
+    round_spec, confirm_spec = h.holder["duel_specs"]
+    asked = {t.task_id for t in round_spec.public_tasks}
+    confirmed_on = {t.task_id for t in confirm_spec.public_tasks}
+    assert len(confirmed_on) == constants.N_PUB_TASKS
+    assert not asked & confirmed_on  # a fresh exam, not a repeat of the round
+    assert asked | confirmed_on <= set(h.state.served_public_task_ids)  # both retired
+
+
+def test_calibration_under_a_sealed_release_draws_from_the_generator(tmp_path):
+    """Calibration asked the generator for the contract's release, which a sealed
+    release cannot serve, so the noise floor could never update. It generates from
+    the release the pool was cut for instead: calibration recurs, and drawing its
+    exams from the pool would spend the pool on measuring noise."""
+    from epago.validator.service import CALIBRATION_EVERY_TICKS
+
+    h = _sealed_release_harness(tmp_path)
+    releases: list[str] = []
+
+    def generator(**kw):
+        releases.append(kw["release"])
+        return _generator_refusing_sealed_releases(**kw)
+
+    h.service.deps.generate_tasks = generator
+    h.service.deps.run_calibration_duel = lambda *a, **k: 0.005
+    h.service.tick()  # the genesis king is in place
+    h.service.state.tick_count = CALIBRATION_EVERY_TICKS
+
+    h.service._maybe_calibrate(h.chain.current_block())
+
+    assert releases == ["SCI4"]
+    assert (h.service.state.last_error or {}).get("code") != "calibration_failed"
+    assert h.service.state.noise_floor_samples  # the sample landed
 
 
 def test_a_round_retires_the_tasks_it_asked(tmp_path):
@@ -1939,6 +2069,27 @@ def test_a_staged_round_publishes_its_tasks_in_full(tmp_path):
     assert payload["manifest_digest"] == h.service.cfg.eval.public_pool_manifest_digest
     assert {t["task_id"] for t in payload["tasks"]} == {t.task_id for t in tasks}
     assert all(t["question"] and t["answer"] for t in payload["tasks"])
+
+
+def test_a_staged_round_publishes_the_papers_its_tasks_rest_on(tmp_path):
+    """Miners do not get the exam corpus, so a released round must carry the
+    papers its tasks cite, or nobody outside the validator could re-grade it.
+    A paper the corpus cannot return is left out, never invented."""
+    import json
+
+    h = _sealed_release_harness(tmp_path)
+    tasks = h.service._public_tasks(seed=5, n=10)
+    cited = sorted({d for t in tasks for d in t.evidence_doc_ids})
+    missing, present = cited[0], cited[1:]
+    h.service.deps.corpus = FakeCorpus({d: f"text of {d}" for d in present})
+
+    h.service._stage_public_pool_round(7, tasks)
+
+    staged = next(h.service.audit_log.delayed_dir.glob("*publicpool-round000007*"))
+    evidence = json.loads(staged.read_text())["evidence"]
+    assert set(evidence) == set(present)
+    assert evidence[present[0]]["text"] == f"text of {present[0]}"
+    assert missing not in evidence
 
 
 def test_a_round_is_not_published_before_its_delay_elapses(tmp_path):

@@ -288,3 +288,42 @@ class TestPhaseB:
 
     def test_active_well_past_boundary(self):
         assert phase_b_active(500, 9, 1_000_000, **self.MIN)
+
+
+class TestFixedBurn:
+    """A fixed burn replaces the schedule: the king takes what the burn leaves."""
+
+    FIXED = EmissionsSection(
+        king_share=0.90,
+        arena_share=0.10,
+        reign_halflife_blocks=216_000,
+        coronation_bonus_cap=3.0,
+        coronation_bonus_blocks=7_200,
+        burn_share=0.95,
+    )
+
+    def test_the_king_takes_the_rest_and_the_arena_nothing(self):
+        arena = [ArenaEntry(hotkey="king-0", dethroned_block=900)]
+        w = compute_weights(king(), arena, current_block=1_000, cfg=self.FIXED, burn_hotkey=BURN)
+        assert w == pytest.approx({BURN: 0.95, "king-hk": 0.05})
+
+    @pytest.mark.parametrize(
+        ("reign_age", "blocks_since_crowned"),
+        [(0, 0), (21_600, 10**9), (10**7, 10**9)],
+    )
+    def test_the_kings_share_is_flat(self, reign_age, blocks_since_crowned):
+        """No band to bleed through and no bonus to lift it."""
+        current = 10**8
+        k = KingEmissionState(
+            hotkey="king-hk",
+            reign_started_block=current - reign_age,
+            crowned_block=current - blocks_since_crowned,
+            coronation_lcb=0.09,
+            coronation_delta=0.03,
+        )
+        w = compute_weights(k, [], current, self.FIXED, burn_hotkey=BURN)
+        assert w["king-hk"] == pytest.approx(0.05)
+
+    def test_no_king_still_burns_everything(self):
+        w = compute_weights(None, [], current_block=1_000, cfg=self.FIXED, burn_hotkey=BURN)
+        assert w == {BURN: 1.0}

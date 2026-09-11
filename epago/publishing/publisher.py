@@ -89,15 +89,18 @@ class PublishReport:
 
 
 def _make_store():
-    """Late import so the package imports without boto3 (a chain extra) installed."""
+    """The public store: everything this module ships is meant to be read by anyone.
+
+    Late import so the package imports without boto3 (a chain extra) installed.
+    """
     try:
-        from epago.model.objectstore import ObjectStore
+        from epago.model.objectstore import public_store
     except ImportError as exc:  # pragma: no cover - exercised via error message tests
         raise PublishError(
             "boto3 is not installed; `pip install 'epago[chain]'` to publish "
             "validator state to the object store"
         ) from exc
-    return ObjectStore()
+    return public_store()
 
 
 def _is_hidden(rel: Path) -> bool:

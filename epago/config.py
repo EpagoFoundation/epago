@@ -69,6 +69,12 @@ class ChainSection:
     #: registered neuron, and during Phase A that is the entire subnet emission.
     #: Empty falls back to the old behaviour with a startup warning.
     burn_hotkey: str = ""
+    #: Accept private submissions only: uploads into the validator's bucket,
+    #: which nobody else can read until the model wins. A public ``hf:``
+    #: submission is refused at intake, since its weights were open to every
+    #: rival the moment it was revealed. In the contract rather than an env
+    #: file, because validators that disagreed on it would split every verdict.
+    private_submissions_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,6 +151,12 @@ class EmissionsSection:
     #: asymptotically over a month makes the schedule something a miner can
     #: reason about.
     reign_decay_blocks: int = 21_600  # ~3 days
+    #: A fixed share of the whole emission sent to ``chain.burn_hotkey``. Zero
+    #: keeps the schedule above. Above zero it replaces it: the king takes the
+    #: rest, flat, and the arena is off -- with most of the emission burned,
+    #: what is left is too small to split. The Phase A gate does not apply
+    #: either, since the burn already caps what any king can collect.
+    burn_share: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -251,6 +263,8 @@ def load_config(path: str | Path | None = None) -> EpagoConfig:
     total = shares.king_share + shares.arena_share
     if abs(total - 1.0) > 1e-9:
         raise ValueError(f"emission shares must sum to 1.0, got {total}")
+    if not 0.0 <= shares.burn_share <= 1.0:
+        raise ValueError(f"emissions.burn_share must be in [0, 1], got {shares.burn_share}")
     # Fail at load, not on the first submission. A sealed release with no
     # generator release still boots and still serves the public half; it breaks
     # later and elsewhere -- the format probe raises on the next miner to

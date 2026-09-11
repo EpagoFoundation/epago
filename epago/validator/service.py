@@ -851,14 +851,21 @@ class ValidatorService:
         lottery tickets, but squaring the tail can. Costs two sweeps, paid only
         when a coronation is on the table. Returns None when the confirmation
         exam could not be minted or run; the caller treats that as unconfirmed.
+
+        The public half comes from the same source as the round's, through
+        :meth:`_public_tasks`. Asking the generator directly broke every sealed
+        release: a ``POOL`` release names no templates, so the mint raised, the
+        winner was demoted, and nothing could ever be crowned. From a sealed
+        pool the draw also skips the round's own tasks -- they are not retired
+        until the round record is staged, and an exam that repeats them is not
+        a fresh one -- and the confirmation's tasks are then staged and retired
+        exactly like a round's, so no later round can ask them again.
         """
         try:
-            public_tasks = self.deps.generate_tasks(
-                seed=round_confirmation_public_seed(start.block_hash, start.round),
-                release=self.cfg.eval.taskgen_release,
-                corpus=self.deps.corpus,
-                n=constants.N_PUB_TASKS,
-                king_probe=None,
+            public_tasks = self._public_tasks(
+                round_confirmation_public_seed(start.block_hash, start.round),
+                constants.N_PUB_TASKS,
+                exclude={getattr(t, "task_id", str(t)) for t in spec.public_tasks},
             )
             private_tasks = self.deps.private_pool.sample(
                 constants.N_PRIV_TASKS,
@@ -875,6 +882,9 @@ class ValidatorService:
                 noise_floor=spec.noise_floor,
             )
             results = self._run_round_duel(confirm_spec)
+            # A sealed pool's confirmation exam is disclosed and retired like the
+            # round's own; a generator release makes this a no-op.
+            self._stage_public_pool_round(start.round, public_tasks)
         except Exception as exc:  # noqa: BLE001 - unconfirmed, never crowned
             self.state.last_error = {
                 "code": "confirmation_failed",
@@ -1288,7 +1298,7 @@ class ValidatorService:
         }
         return False
 
-    def _public_tasks(self, seed: int, n: int) -> list:
+    def _public_tasks(self, seed: int, n: int, exclude: set[str] | None = None) -> list:
         """The public half, from the generator or from a sealed pool.
 
         Which one is decided by the release name alone, so an audit record is
@@ -1301,6 +1311,10 @@ class ValidatorService:
         challenger's weights were frozen, and it cannot be swapped afterwards.
         Selection is still seeded by a block hash nobody chose, so *which*
         questions get asked is unknown even to whoever minted the pool.
+
+        ``exclude`` names task ids to skip beyond those already served: the
+        confirmation exam passes the round's own, which are not retired until
+        the round record is staged.
         """
         from epago.taskgen.sealed_pool import is_sealed_release
 
@@ -1328,9 +1342,8 @@ class ValidatorService:
         # training data from that moment on; drawing them again would let a
         # challenger trained after that publication answer part of its exam
         # from memory rather than from research.
-        return select(
-            load_pool(path, digest), seed, n, exclude=set(self.state.served_public_task_ids)
-        )
+        skip = set(self.state.served_public_task_ids) | set(exclude or ())
+        return select(load_pool(path, digest), seed, n, exclude=skip)
 
     def _stage_public_pool_round(self, round_no: int, public_tasks: list) -> None:
         """Publish a sealed-pool round's tasks, and retire them from the pool.
@@ -1367,6 +1380,7 @@ class ValidatorService:
                     task_ids_digest=digest,
                     pool_digest_value=getattr(self.cfg.eval, "public_pool_digest", ""),
                     manifest_digest=getattr(self.cfg.eval, "public_pool_manifest_digest", ""),
+                    evidence=self._evidence_papers(public_tasks),
                 ),
                 self.deps.clock() + constants.AUDIT_PUBLISH_DELAY_BLOCKS,
             )
@@ -1382,6 +1396,30 @@ class ValidatorService:
         served = set(self.state.served_public_task_ids)
         served.update(getattr(t, "task_id", str(t)) for t in public_tasks)
         self.state.served_public_task_ids = sorted(served)
+
+    def _evidence_papers(self, tasks: list) -> dict[str, dict]:
+        """The papers a round's tasks rest on, as its round file publishes them.
+
+        Looked up in the pinned corpus by the ids each task already records. A
+        paper the corpus cannot return is left out rather than invented; the
+        task still lists its id, so an auditor sees exactly what is missing.
+        """
+        corpus = self.deps.corpus
+        papers: dict[str, dict] = {}
+        if corpus is None:
+            return papers
+        for task in tasks:
+            for doc_id in getattr(task, "evidence_doc_ids", ()):
+                if doc_id in papers:
+                    continue
+                doc = corpus.get(doc_id)
+                if doc is not None:
+                    papers[doc_id] = {
+                        "title": getattr(doc, "title", ""),
+                        "url": getattr(doc, "url", ""),
+                        "text": getattr(doc, "text", ""),
+                    }
+        return papers
 
     def _pool_file(self, configured: str) -> Path | None:
         """Where this box keeps a sealed-pool file.
@@ -1628,9 +1666,11 @@ class ValidatorService:
         try:
             king_dir = self._materialize(self.state.king.ref)
             seed = derive_seed(self.chain.block_hash(block), self.deps.wallet_hotkey, b"calibration")
+            # Calibration generates rather than draws: a sealed release names no
+            # templates, and a recurring noise measurement would drain the pool.
             tasks = self.deps.generate_tasks(
                 seed=seed,
-                release=self.cfg.eval.taskgen_release,
+                release=self.cfg.eval.generation_release,
                 corpus=self.deps.corpus,
                 n=constants.N_PUB_TASKS,
                 king_probe=None,
@@ -1907,7 +1947,9 @@ class ValidatorService:
         Phase gate: before :func:`epago.core.emissions.phase_b_active` the full
         emission burns (weight 1.0 on the burn key). In Phase B the weight
         vector is :func:`epago.core.emissions.compute_weights` over the king
-        emission state and arena entries.
+        emission state and arena entries. A fixed burn
+        (``emissions.burn_share`` above zero) skips the gate: the burn key
+        takes that share and the king the rest from its first coronation.
         Bad-faith challengers are disciplined by intake cooldowns (see
         :mod:`epago.validator.intake`), not by weight manipulation.
         """
@@ -1942,7 +1984,9 @@ class ValidatorService:
             min_dethrones=constants.PHASE_B_MIN_DETHRONES,
             min_blocks=constants.PHASE_B_MIN_BLOCKS,
         )
-        if not phase_b:
+        # A fixed burn already caps what any king collects, which is what
+        # Phase A is for, so under one the king is paid from its coronation.
+        if not phase_b and self.cfg.emissions.burn_share <= 0:
             hotkey_weights = {burn_hotkey: 1.0}
         else:
             king_emission = self._king_emission_state(block)

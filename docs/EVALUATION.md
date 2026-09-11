@@ -686,7 +686,7 @@ artifacts:
 |---|---|---|---|
 | **pool** | every task with answers | when the pool retires | `public_pool_digest` |
 | **manifest** | task ids only | immediately | `public_pool_manifest_digest` |
-| **round file** | the tasks one round asked | after the embargo | `public_task_ids_digest` |
+| **round file** | the tasks one round asked, with the papers they rest on | after the embargo | `public_task_ids_digest` |
 
 Both digests are fixed in the contract **before** any round opens, so the exam
 provably existed before any challenger's weights were frozen, and neither artifact
@@ -1147,6 +1147,11 @@ always keeps a defined majority while the crown is always worth attacking.
 
 Before any king exists, the arena share burns — the network does not pay a roster
 that has not been earned.
+
+Mainnet currently runs a fixed burn instead (`burn_share = 0.95` in `chain.toml`):
+95% of the miner emission burns and the king takes the other 5%, flat, from its
+first coronation. There is no arena while it is set; `burn_share = 0` restores the
+schedule above.
 
 Validators that run evaluation set weights from what they measured. Validators that
 do not run evaluation read the accepted verdicts from chain and set the same
