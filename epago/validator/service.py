@@ -495,8 +495,8 @@ class ValidatorService:
         2. the **on-chain authority hotkey**, whose ``er1`` every validator can
            see and time-check independently.
 
-        The minimum interval is enforced for both, so neither can run rounds
-        back to back.
+        A minimum interval, when one is set, is enforced for both. By default
+        there is none: each request opens a round, and the owner paces them.
         """
         if self._round_trigger is not None and self._round_trigger.take():
             block = self._safe_block()
@@ -1044,9 +1044,9 @@ class ValidatorService:
             "delta": outcome.delta,
             "round": start.round,
             # The coronation window runs from the round, not from the reveal.
-            # Submissions wait for the next competition, and with a ~2-day
-            # cadence and a ~24h timeout every one of them would lapse before
-            # its round ever opened.
+            # Submissions wait for the next competition, and with rounds about
+            # a day apart and a ~24h timeout many of them would lapse before
+            # their round ever opened.
             "round_block": start.block,
         }
 

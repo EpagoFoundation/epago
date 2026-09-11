@@ -1201,14 +1201,11 @@ def test_a_round_from_a_non_authority_hotkey_is_ignored(tmp_path):
     assert h.state.last_round_run == 0
 
 
-def test_a_round_opened_too_soon_is_ignored(tmp_path):
-    """The 2-day cadence is enforced by every validator, not by the caller.
-
-    Otherwise the authority could run rounds back to back and hand a favoured
-    miner as many exam draws as it liked.
-    """
+def test_a_round_opened_too_soon_is_ignored(tmp_path, monkeypatch):
+    """A configured minimum gap is enforced by every validator, not by the caller."""
     from epago.core.reveal import build_round_start
 
+    monkeypatch.setattr(constants, "ROUND_MIN_INTERVAL_BLOCKS", 14_400)
     h = make_harness(tmp_path)
     add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
     settle(h)                                   # round 1 lands legitimately
@@ -1227,6 +1224,8 @@ def test_a_round_opened_too_soon_is_ignored(tmp_path):
 
     assert len(h.holder["duel_specs"]) == duels_before
     assert h.state.last_round_run == 1
+    # Refused for the gap, not for running out of tasks.
+    assert (h.state.last_error or {}).get("code") != "taskgen_failed"
 
 
 def test_a_replayed_round_number_is_ignored(tmp_path):
@@ -1505,9 +1504,45 @@ def test_api_trigger_opens_a_round_from_the_current_block(tmp_path):
     assert spec.block_hash_at_reveal == h.chain.block_hash(h.state.last_round_block)
 
 
-def test_api_trigger_respects_the_minimum_interval(tmp_path):
+def test_each_api_request_opens_a_round(tmp_path):
+    """No minimum gap by default: the owner paces rounds, so a request made
+    right after a round finishes opens the next one."""
     from epago.validator.roundapi import RoundTrigger
 
+    # Generator-served, so round 2 is not refused for want of pool tasks.
+    h = _generator_release_harness(tmp_path)
+    h.cfg = replace(h.service.cfg, chain=replace(h.service.cfg.chain, round_authority_hotkey=""))
+    h.service.cfg = h.cfg
+    trigger = RoundTrigger()
+    h.service._round_trigger = trigger
+
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.service.tick()
+    h.chain.advance(1)                      # a round takes reveals strictly before it
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    duels_after_first = len(h.holder["duel_specs"])
+    assert duels_after_first >= 1
+    assert h.state.last_round_run == 1
+
+    add_challenger(h, "bob", "hk-bob", "ck-bob-001", uid=3, digest_char="b",
+                   king_digest=h.state.king.ref.digest)
+    h.service.tick()
+    h.chain.advance(100)                    # well under a day
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    assert len(h.holder["duel_specs"]) > duels_after_first
+    assert h.state.last_round_run == 2
+
+
+def test_a_configured_minimum_interval_still_holds(tmp_path, monkeypatch):
+    """A validator that sets EPAGO_ROUND_MIN_INTERVAL_BLOCKS still ignores a
+    request that comes too soon."""
+    from epago.validator.roundapi import RoundTrigger
+
+    monkeypatch.setattr(constants, "ROUND_MIN_INTERVAL_BLOCKS", 14_400)
     h = make_harness(tmp_path)
     h.cfg = replace(h.cfg, chain=replace(h.cfg.chain, round_authority_hotkey=""))
     h.service.cfg = h.cfg
@@ -1532,6 +1567,7 @@ def test_api_trigger_respects_the_minimum_interval(tmp_path):
     for _ in range(3):
         h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
     assert len(h.holder["duel_specs"]) == duels_after_first  # no new round
+    assert (h.state.last_error or {}).get("code") != "taskgen_failed"
 
 
 def test_round_trigger_rejects_a_bad_key():
