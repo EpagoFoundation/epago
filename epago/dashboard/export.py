@@ -14,6 +14,7 @@ construction.
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +35,58 @@ DASHBOARD_SCHEMA = "epd1"
 
 # Keep the export bounded: the site stays fast on years of history.
 MAX_DUEL_ROWS = 200
+MAX_REFUSED_ROWS = 200
 MAX_SERIES_POINTS = 500
+
+# The raw files the publisher uploads beside the page. The page is served from
+# ``<repo_id>/dashboard/index.html``, so the paths are relative to it and no
+# host is ever baked into the export.
+PUBLISHED_LINKS = {
+    "audit_log": "../audit/audit.jsonl",
+    "file_index": "../index.json",
+}
+
+# One fixed public sentence per refusal code. The validator's own ``detail``
+# text is never exported: it can carry exception messages, local paths and
+# URLs. A code missing here gets the fallback rather than its detail.
+REFUSAL_REASONS = {
+    # intake: the reveal itself
+    "duplicate_digest": "Another hotkey revealed this same checkpoint first; the first reveal owns it.",
+    "hotkey_spent": "This hotkey has already submitted once; each hotkey gets one submission.",
+    "public_submission": "This subnet takes private uploads only; public Hugging Face submissions are refused.",
+    "stale_parent": "It was trained against a king that is no longer the current one.",
+    "self_challenge": "Its author already holds the crown, and the king cannot challenge itself.",
+    "cooldown": "Its hotkey is in a cooldown; it can be revealed again once the cooldown ends.",
+    "failure_memory": "This checkpoint already failed once, and a failed checkpoint is not checked again.",
+    "unknown_hotkey": "Its hotkey is not registered on the subnet.",
+    "hotkey_not_sealable": "Its hotkey is not an Ed25519 key, so upload credentials cannot be sent to it.",
+    "wrong_prefix": "A private upload must sit under its author's own folder, and this one did not.",
+    "repo_pattern": "Its repository name does not follow the required pattern.",
+    "hotkey_prefix": "Its repository name does not contain its author's hotkey prefix.",
+    # admission: the checkpoint's files
+    "materialize_failed": "The validator could not download its weights.",
+    "python_file": "It contains Python code; a submission may hold weights and config files only.",
+    "pickle_weights": "Its weights are not in safetensors format, the only format accepted.",
+    "unexpected_file": "It contains a file type that is not allowed.",
+    "layout": "Its weights are not laid out as standard safetensors files.",
+    "config_missing": "Its config.json is missing or cannot be read.",
+    "auto_map": "Its config asks to run custom model code, which is not allowed.",
+    "config_lock": "Its model config does not match the king's architecture.",
+    "size_cap": "Its weights are larger than the size limit.",
+    "exact_copy": "Its weights are identical to the current king.",
+    "probes": "It failed the format and sanity checks run before the exam.",
+    "duplicate_weights": "Its weights are identical to another submission that entered first.",
+}
+REFUSAL_FALLBACK = "The submission did not pass the validator's checks."
+
+# Statuses that end a submission before any duel; each maps to the code shown
+# when failure memory holds nothing for the digest.
+_REFUSED_STATUSES = {
+    "failed_intake": "failed_intake",
+    "stale_parent": "stale_parent",
+    "failed_probes": "probes",
+}
+_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 @dataclass(slots=True)
@@ -76,7 +128,9 @@ def export_dashboard(inputs: DashboardInputs) -> dict[str, Any]:
         "rounds": _rounds(records),
         "miners": _miners(records, state),
         "funnel": _funnel(state),
+        "refused": _refused(state, records),
         "queue": _queue(state, block),
+        "round_running": _round_running(state),
         "quorum": _quorum(state, cfg),
         "sla": _sla(state, block),
         "emissions": _emissions(state, block, cfg),
@@ -86,6 +140,7 @@ def export_dashboard(inputs: DashboardInputs) -> dict[str, Any]:
             "floor": noise_floor_from_calibration(state.get("noise_floor_samples", [])),
             "samples": state.get("noise_floor_samples", [])[-50:],
         },
+        "links": dict(PUBLISHED_LINKS),
     }
 
 
@@ -434,6 +489,99 @@ def _funnel(state: dict) -> list[dict]:
     rows = [{"stage": label, "key": key, "count": counts.get(key, 0)} for key, label in order]
     rows.insert(0, {"stage": "In queue", "key": "queued", "count": queued})
     return rows
+
+
+def _round_running(state: dict) -> dict | None:
+    """The round being evaluated right now, or ``None`` between rounds.
+
+    Only that a round is open and who entered it: nothing about its progress
+    is exported. Results appear in the duel and round tables once it ends.
+    State files written before the key existed read as idle.
+    """
+    rnd = state.get("round_in_progress")
+    if not rnd:
+        return None
+    return {
+        "round": int(rnd.get("round", 0)),
+        "block": int(rnd.get("block", 0)),
+        "entrants": [
+            {
+                "digest": e.get("digest", ""),
+                "author_hotkey": e.get("author_hotkey", ""),
+                "repo": e.get("repo", ""),
+            }
+            for e in rnd.get("entrants") or []
+        ],
+    }
+
+
+def _refused(state: dict, records: list[dict]) -> list[dict]:
+    """Every submission turned away before a duel, newest first.
+
+    The funnel only counts these; a miner needs to find their own and read
+    why. Two sources: failure memory and statuses for checkpoints the
+    validator resolved, and the intake log for reveals refused on the spot
+    (spent or unregistered hotkeys, cooldowns, copied digests), which leave
+    no status behind. Intake re-reads every reveal each tick, so the log
+    repeats the same refusal; rows are keyed by ``(digest, hotkey)`` and
+    dated by the first refusal. A submission that dueled is left out — it is
+    already in the duel table. The reason is always the fixed sentence for
+    its code, never the validator's own detail text.
+    """
+    dueled = {
+        r.get("challenger_digest", "")
+        for r in records
+        if not r.get("round_id", "").startswith("calib-")
+    }
+    statuses = state.get("statuses") or {}
+    memory = state.get("failure_memory") or {}
+    owners = state.get("seen_digests") or {}
+    log = [e for e in state.get("intake_log") or [] if e.get("code") != "queued"]
+
+    first_block: dict[tuple[str, str], int] = {}
+    log_hotkey: dict[str, str] = {}
+    for e in log:
+        key = (e.get("digest", ""), e.get("hotkey", ""))
+        first_block.setdefault(key, int(e.get("block", 0)))
+        log_hotkey[key[0]] = key[1]
+
+    rows: dict[tuple[str, str], dict] = {}
+    for digest in sorted(set(memory) | set(statuses)):
+        memo = memory.get(digest) or {}
+        status = statuses.get(digest)
+        if digest in dueled or memo.get("code") == "duel_lost":
+            continue
+        if not memo and status not in _REFUSED_STATUSES:
+            continue
+        if memo and status is not None and status not in _REFUSED_STATUSES:
+            continue  # the status shows it went on to a duel
+        hotkey = owners.get(digest) or log_hotkey.get(digest, "")
+        code = memo.get("code") or _REFUSED_STATUSES.get(status, "")
+        block = memo.get("block") or first_block.get((digest, hotkey), 0)
+        rows[(digest, hotkey)] = _refused_row(digest, hotkey, code, block)
+
+    # Newest log entry wins the reason: a cooldown can turn into a spent hotkey.
+    for e in reversed(log):
+        digest, hotkey = e.get("digest", ""), e.get("hotkey", "")
+        if (digest, hotkey) in rows or owners.get(digest) == hotkey:
+            continue  # resolved above, or later admitted under this hotkey
+        rows[(digest, hotkey)] = _refused_row(
+            digest, hotkey, e.get("code", ""), first_block[(digest, hotkey)]
+        )
+
+    out = sorted(rows.values(), key=lambda r: (-r["block"], r["digest"], r["author_hotkey"]))
+    return out[:MAX_REFUSED_ROWS]
+
+
+def _refused_row(digest: str, hotkey: str, code: str, block: int) -> dict:
+    code = code if _CODE_RE.match(code or "") else "unknown"
+    return {
+        "digest": digest,
+        "author_hotkey": hotkey,
+        "code": code,
+        "reason": REFUSAL_REASONS.get(code, REFUSAL_FALLBACK),
+        "block": int(block or 0),
+    }
 
 
 def _quorum(state: dict, cfg: EpagoConfig) -> dict:
