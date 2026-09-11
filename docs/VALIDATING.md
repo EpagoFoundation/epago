@@ -394,6 +394,13 @@ public dataset repo, run the publisher alongside it:
 epago publish watch --state-dir ~/.epago/validator --repo-id <org>/<audit-repo>
 ```
 
+To publish the dashboard too, export it into the state directory; the publisher
+then ships it to `{validator}/dashboard/`:
+
+```bash
+epago dashboard watch --state-dir ~/.epago/validator --out ~/.epago/validator/dashboard
+```
+
 ### External benchmark anchor
 
 The anchor is the eval-of-the-eval: internal king accuracy climbing while scores on an

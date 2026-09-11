@@ -42,6 +42,9 @@ epago dashboard export --state-dir ~/.epago/validator --out ./dashboard
 
 # keep it fresh while the validator runs
 epago dashboard watch --state-dir ~/.epago/validator --out ./dashboard
+
+# publish it: export into the state dir, and `epago publish watch` ships it
+epago dashboard watch --state-dir ~/.epago/validator --out ~/.epago/validator/dashboard
 ```
 
 `--out` receives `dashboard.json` plus `index.html`; serve the directory with any
