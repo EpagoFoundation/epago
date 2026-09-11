@@ -21,10 +21,12 @@ deterministic degradation (bootstrap quorum mode, burn-all Phase A weights).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -191,7 +193,7 @@ def compute_sla_report(records: list[dict]) -> dict:
 
 
 class ValidatorService:
-    def __init__(self, deps: Deps) -> None:
+    def __init__(self, deps: Deps, *, background_rounds: bool = False) -> None:
         self.deps = deps
         self.chain = deps.chain
         self.cfg = deps.cfg
@@ -214,6 +216,26 @@ class ValidatorService:
         self._active_window_blocks = (
             self.cfg.quorum.active_window_duels * constants.SLA_TARGET_HOURS * BLOCKS_PER_HOUR
         )
+        # A round can take hours. With ``background_rounds`` it runs on its own
+        # thread and the loop keeps taking submissions, refreshing the mailbox
+        # and saving state meanwhile. One lock guards the state: the loop holds
+        # it for a whole tick, a round only between its long calls (downloads,
+        # GPU sweeps). Tests drive rounds inline, inside the tick.
+        self.background_rounds = background_rounds
+        self._state_lock = threading.Lock()
+        self._round_thread: threading.Thread | None = None
+        self._round_unlocked = False
+        if self.state.round_in_progress is not None:
+            # The process stopped mid-round. Entrants it had not settled are
+            # still queued; the next request runs them.
+            interrupted = self.state.round_in_progress.get("round")
+            logger.warning("round %s was cut short by a restart; send a new request to run it", interrupted)
+            self.state.last_error = {
+                "code": "round_interrupted",
+                "detail": f"round {interrupted} did not finish",
+                "block": self._safe_block(),
+            }
+            self.state.round_in_progress = None
 
     # ------------------------------------------------------------------ loop
 
@@ -236,16 +258,75 @@ class ValidatorService:
                     logger.exception("state save failed after tick failure")
             await asyncio.sleep(poll_interval_s)
 
+    def _round_running(self) -> bool:
+        """True while a background round is being scored."""
+        return self._round_thread is not None and self._round_thread.is_alive()
+
+    def _open_round(self, start: RoundStart) -> None:
+        """Run the round inline, or hand it to its own thread."""
+        if not self.background_rounds:
+            self._run_round(start)
+            return
+        self._round_thread = threading.Thread(
+            target=self._round_worker, args=(start,), name=f"epago-round-{start.round}", daemon=True
+        )
+        self._round_thread.start()
+
+    def _round_worker(self, start: RoundStart) -> None:
+        """One round on its own thread. It waits for the tick that started it
+        to release the state lock, and holds the lock except around long calls."""
+        with self._state_lock:
+            try:
+                self._run_round(start)
+            except Exception as exc:  # a round never takes the loop down
+                logger.exception("round %d failed", start.round)
+                self.state.last_error = {
+                    "code": "round_failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                    "block": self._safe_block(),
+                }
+            finally:
+                self.state.round_in_progress = None
+                try:
+                    self.state.save()
+                except OSError:
+                    logger.exception("state save failed after round %d", start.round)
+
+    @contextlib.contextmanager
+    def _lock_released(self):
+        """Free the state lock while a background round waits on a long call.
+
+        Only the round thread ever gives the lock up, and only around work that
+        touches no state: a download, a probe run, a GPU sweep. Anywhere else --
+        the loop, or a round run inline -- this does nothing.
+        """
+        if threading.current_thread() is not self._round_thread or self._round_unlocked:
+            yield
+            return
+        self._round_unlocked = True
+        self._state_lock.release()
+        try:
+            yield
+        finally:
+            self._state_lock.acquire()
+            self._round_unlocked = False
+
     def tick(self) -> None:
         """One full synchronous pass. This is what tests drive."""
+        with self._state_lock:
+            self._tick()
+
+    def _tick(self) -> None:
         block = self.deps.clock()
         if self.state.genesis_block == 0:
             self.state.genesis_block = block
         self._ensure_genesis_king(block)
         # Before anything reads the king: an auditing validator takes the throne
         # from the authority's on-chain pointer, so intake compares challenges
-        # against the king the subnet actually has.
-        self._sync_king_from_pointer()
+        # against the king the subnet actually has. Not mid-round: the field is
+        # scored against the king it opened with.
+        if not self._round_running():
+            self._sync_king_from_pointer()
 
         # Re-commit anything a prior tick could not land (commitment rate
         # limit). Do this first and alone so it wins this window's write budget.
@@ -271,10 +352,12 @@ class ValidatorService:
         # Competitions only run when the round authority triggers one. With no
         # trigger the queue keeps filling and nothing is evaluated — a
         # deliberate liveness dependency on a privileged key.
-        pending = self._pending_round()
+        # A request that lands mid-round stays pending and opens the next round
+        # once this one ends.
+        pending = None if self._round_running() else self._pending_round()
         if pending is not None:
             if self._ensure_pool_committed(block):
-                self._run_round(pending)
+                self._open_round(pending)
             elif self._round_trigger is not None and not pending.authority_hotkey:
                 # The API latch was consumed to mint this round, but the private
                 # pool's ``ep1`` is not on chain yet (the commitment pallet
@@ -288,13 +371,20 @@ class ValidatorService:
                     pending.round,
                 )
                 self._round_trigger.request()
-        self._derive_coronations(self.deps.clock())
+        # A round in flight fixes the throne, the private pool and the GPUs for
+        # its whole run: coronation, rotation, calibration and the anchor wait
+        # for it to end. Intake, the mailbox and weights keep going.
+        busy = self._round_running()
+        if not busy:
+            self._derive_coronations(self.deps.clock())
         self._retry_mirror()
-        self._rotate_private_pool(self.deps.clock())
+        if not busy:
+            self._rotate_private_pool(self.deps.clock())
         self._maybe_publish_mailbox(self.deps.clock())
         self._publish_pool_manifest()
-        self._maybe_calibrate(self.deps.clock())
-        self._maybe_anchor(self.deps.clock())
+        if not busy:
+            self._maybe_calibrate(self.deps.clock())
+            self._maybe_anchor(self.deps.clock())
         try:
             self.maybe_set_weights()
         except Exception as exc:  # noqa: BLE001 - periodic emission set; never abort the tick
@@ -410,13 +500,14 @@ class ValidatorService:
     # ------------------------------------------------------------- the duel
 
     def _materialize(self, ref: ModelRef) -> Path:
-        if self.deps.materialize is not None:
-            return Path(self.deps.materialize(ref, self.deps.cache_dir))
-        from epago.model.store import materialize_model  # heavy deps stay late-bound
+        with self._lock_released():  # a checkpoint download can take a while
+            if self.deps.materialize is not None:
+                return Path(self.deps.materialize(ref, self.deps.cache_dir))
+            from epago.model.store import materialize_model  # heavy deps stay late-bound
 
-        return materialize_model(
-            ref, self.deps.cache_dir, fallbacks=self._public_fallbacks(ref)
-        )
+            return materialize_model(
+                ref, self.deps.cache_dir, fallbacks=self._public_fallbacks(ref)
+            )
 
     @staticmethod
     def _public_fallbacks(ref: ModelRef) -> tuple[ModelRef, ...]:
@@ -580,6 +671,23 @@ class ValidatorService:
             self.state.last_round_block = start.block
             return
 
+        self.state.round_in_progress = {
+            "round": start.round,
+            "block": start.block,
+            "entrants": [
+                {"digest": q.digest, "author_hotkey": q.author_hotkey, "repo": q.repo}
+                for q in field
+            ],
+        }
+        self.state.save()
+        try:
+            self._run_field(start, field, block)
+        finally:
+            self.state.round_in_progress = None
+
+    def _run_field(self, start: RoundStart, field: list[QueuedSubmission], block: int) -> None:
+        """Gate, duel and settle one round's field, then stage its record."""
+        assert self.state.king is not None
         try:
             king_dir = self._materialize(self.state.king.ref)
         except Exception as exc:  # noqa: BLE001 - retry the whole round next tick
@@ -744,7 +852,9 @@ class ValidatorService:
                     "; ".join(f"{f.code}: {f.detail}" for f in failures),
                 )
                 continue
-            if exact_copy_of_king(challenger_dir, king_dir):
+            with self._lock_released():
+                copied = exact_copy_of_king(challenger_dir, king_dir)
+            if copied:
                 resolve(
                     SubmissionStatus.FAILED_INTAKE,
                     "exact_copy",
@@ -752,7 +862,8 @@ class ValidatorService:
                 )
                 continue
 
-            probe_failures = list(self.deps.run_probes(challenger_dir, king_dir))
+            with self._lock_released():
+                probe_failures = list(self.deps.run_probes(challenger_dir, king_dir))
             if probe_failures:
                 resolve(
                     SubmissionStatus.FAILED_PROBES,
@@ -762,7 +873,8 @@ class ValidatorService:
                 )
                 continue
 
-            fingerprint = weight_fingerprint(challenger_dir)
+            with self._lock_released():
+                fingerprint = weight_fingerprint(challenger_dir)
             owner = claimed.get(fingerprint)
             if owner is not None:
                 resolve(
@@ -802,6 +914,11 @@ class ValidatorService:
         return entrants, admitted
 
     def _run_round_duel(self, spec: RoundDuelSpec) -> list[RoundResult]:
+        """Score a field on its exam, with the state lock free for the loop."""
+        with self._lock_released():
+            return self._sweep_field(spec)
+
+    def _sweep_field(self, spec: RoundDuelSpec) -> list[RoundResult]:
         """Delegate to the batch runner, or fall back to per-entrant duels.
 
         The fallback exists so a Deps built with only ``run_duel`` (tests,

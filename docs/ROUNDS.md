@@ -95,6 +95,11 @@ from the hash of the block the request lands on, which the owner cannot choose.
    hotkey is spent either way: one submission per hotkey, permanently.
 6. Quorum crowns the winner as usual.
 
+The round runs in the background. While it is scored, new submissions still join
+the queue, the upload mailbox keeps refreshing, and the dashboard shows the round as
+running, with its entrants. There is no live progress; the results, the audit
+records and the round's tasks publish when it ends.
+
 ## Cadence
 
 Each request opens one round. There is no minimum gap between rounds
