@@ -233,9 +233,10 @@ Epago's schedule keeps the arena alive:
 
 ### 2.5b Why competitions are rounds, and who opens them
 
-The subnet evaluates in **rounds**: submissions queue continuously, and every
-~2 days a round is opened — by an on-chain `er1` from a named authority, or by
-the owner's local API trigger, whichever the contract configures. The
+The subnet evaluates in **rounds**: submissions queue continuously, and a
+round is opened — by an on-chain `er1` from a named authority, or by the
+owner's local API trigger, whichever the contract configures; we aim for one a
+day. The
 whole queued field then answers **one exam** against the king, and the best
 entrant is crowned.
 
@@ -258,9 +259,9 @@ trigger has already seen that hash, so it waits for the next round.
 reverses R1 and R2. Whoever holds it can stop the subnet improving by declining
 to open a round; there is no fallback that opens one without them. Validators
 enforce what they can — only the configured authority is honoured, round
-numbers must strictly increase, and starts must be at least
-`ROUND_MIN_INTERVAL_BLOCKS` apart so rounds cannot be run back to back — but
-the authority still chooses *when* inside the allowed window, which is enough
+numbers must strictly increase, and a validator may set a minimum gap between
+starts (`ROUND_MIN_INTERVAL_BLOCKS`, 0 by default) — but
+the authority still chooses *when* each round opens, which is enough
 to wait for a favoured miner's submission to land. That residual trust is not
 mechanically removable while the trigger exists.
 
@@ -515,7 +516,7 @@ flowchart LR
 |---|---|---|
 | Duel size | 800 public + 200 private | `N_PUB_TASKS`, `N_PRIV_TASKS` |
 | Task releases | `R1` (synthetic), `SCI1` (leaks: names studies / quotes sentences — measured 96.9%/90.9% rank-1 retrieval), `SCI2` (describes studies, masks numbers in quoted windows, adds the multi-doc comparison; 75.7% and falling to the king-probe band filter once a model exists — **frozen**, medicine-tuned vocabulary, kept so existing pins are not silently re-judged), `SCI3` (retired) — SCI2's shapes over the cross-field vocabulary, replaced after instrumented ablations showed it was a cloze test (the question retrieved its own source at rank 1 for 88.3% of tasks; a change proven better on FRAMES moved it by nothing); **`SCI4` (current)** — hard to find, easy to check: `constrained_study` (3–5 crowd-sized constraints whose conjunction is unique, proven by full scan at mint), `named_set_superlative` and `named_set_count` (comparison and counting over title-pinned sets, answers verbatim in no document), every mint self-checked against the live search backend for leaks | `eval.taskgen_release` |
-| Rounds | one competition per trigger, ≥14400 blocks (~2 days) apart, ≤32 entrants | `ROUND_MIN_INTERVAL_BLOCKS`, `ROUND_MAX_ENTRANTS`, `chain.round_authority_hotkey` |
+| Rounds | one competition per trigger, no minimum gap by default (target: one a day), ≤32 entrants | `ROUND_MIN_INTERVAL_BLOCKS`, `ROUND_MAX_ENTRANTS`, `chain.round_authority_hotkey` |
 | Confidence | one-sided 99.9% bootstrap LCB, B = 10,000 | `EVAL_ALPHA`, `BOOTSTRAP_B` |
 | Floor | `δ = max(0.05 × (1 − king_ema), 1 × noise_floor)` | `DELTA_C`, `DELTA_NOISE_MULTIPLIER` |
 | Accept | `lcb_pub > δ` AND `μ̂_priv > 0` | `eval/duel.py` |

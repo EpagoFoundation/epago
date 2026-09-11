@@ -125,11 +125,11 @@ move; the skill does not.
 
 ### Will the subnet run out of tasks?
 
-Not for a long time, and the number is known rather than hoped for. Rounds retire
-the tasks they ask, so the pinned corpus has a real ceiling: 50,420 documents
-yield 21,578 papers usable as answers and 99,831 distinct anchor pairings, which
-at the measured 28% acceptance rate is about 28,000 tasks — roughly nine months
-of rounds at 800 tasks every two days.
+Not while the corpus keeps growing, and the number is known rather than hoped for.
+Rounds retire the tasks they ask, so the pinned corpus has a real ceiling: 50,420
+documents yield 21,578 papers usable as answers and 99,831 distinct anchor
+pairings, which at the measured 28% acceptance rate is about 28,000 tasks — about
+35 exams of 800, or some five weeks at one round a day.
 
 That ceiling is a stop, not a target. Pools are minted a few thousand at a time
 and rotated, and the corpus is being extended with more literature as the subnet

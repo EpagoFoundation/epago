@@ -1181,7 +1181,7 @@ loop.
 | `FORMAT_PROBE_MIN_COMPLIANCE` | 0.55 | intake probe bar over 20 tasks |
 | `PRIVATE_POOL_ROTATION_BLOCKS` | 43,200 | ~6 days; pool publishes at rotation |
 | `AUDIT_PUBLISH_DELAY_BLOCKS` | 50,400 | ~7 days; public task disclosure delay |
-| `ROUND_MIN_INTERVAL_BLOCKS` | 14,400 | ~2 days between rounds |
+| `ROUND_MIN_INTERVAL_BLOCKS` | 0 | no minimum gap; the owner paces rounds (target: one a day) |
 | `ROUND_MAX_ENTRANTS` | 32 | field size per round |
 | `NEAR_MISS_RETRIES` | 1 | free retry on a fresh exam |
 | `SLA_TARGET_HOURS` | 48 | verdict service target |

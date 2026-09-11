@@ -258,13 +258,16 @@ immediately; it is what auditors verify rounds against while the pool is still i
 service. The pool file stays sealed until it retires.
 
 **Rounds are disjoint, so a pool is consumed.** Each round retires the
-`N_PUB_TASKS` it asked. Size a pool for how long you want it to last:
+`N_PUB_TASKS` it asked, and a round with a winner retires another `N_PUB_TASKS`
+for its confirmation exam. Size a pool for how long you want it to last:
 
-| rounds served | tasks needed at `N_PUB_TASKS = 800` | at one round per 2 days |
+| rounds served | tasks needed at `N_PUB_TASKS = 800` | at one round a day |
 |---|---|---|
-| 4 | 3,200 | ~1 week |
-| 8 | 6,400 | ~2 weeks |
-| 15 | 12,000 | ~1 month |
+| 7 | 5,600 | ~1 week |
+| 14 | 11,200 | ~2 weeks |
+| 30 | 24,000 | ~1 month |
+
+Add 800 for every round that crowns a winner.
 
 When the unserved remainder falls below one exam the validator refuses the round
 and records `taskgen_failed`; mint and commit a fresh pool before that happens.

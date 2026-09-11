@@ -58,7 +58,7 @@ sequenceDiagram
     C-->>V: reveal lands — chain stamps block, block hash, and signing hotkey
     V->>V: scan gates (CPU: ownership, stale parent, hotkey spent, repo name)
     Note over V: queued — nothing is evaluated until a round opens
-    O->>C: er1 round start (round authority only, ≥2 days apart)
+    O->>C: er1 round start (round authority only)
     C-->>V: trigger lands — its block hash mints the round's exam
     V->>V: pre-duel gates per entrant (hygiene, config lock, size cap, exact copy)
     V->>V: probes (format compliance >=55%, norm sanity)
@@ -168,13 +168,12 @@ entropy that mints its exam.
 **Nothing is evaluated until one of these lands.** Submissions are accepted
 continuously and queue up, but no duel runs, no verdict is committed and no
 coronation happens until the authority opens a competition. Every validator
-enforces two rules on top of the authority check, so the schedule is a property
-of the chain rather than of how often the owner runs the command:
+enforces these rules on top of the authority check:
 
 | Rule | Why |
 |---|---|
 | Round numbers strictly increase | A replayed number cannot re-run a competition. |
-| ≥ `ROUND_MIN_INTERVAL_BLOCKS` (14400, ~2 days) between starts | Without it the authority could run rounds back to back and hand a favoured miner as many exam draws as it liked. |
+| ≥ `ROUND_MIN_INTERVAL_BLOCKS` between starts — 0 by default, so each trigger opens a round and the owner paces them (aiming for one a day) | A validator can set a floor to stop back-to-back rounds. Without one, extra rounds still give no entrant a second draw: a hotkey submits once, and each submission is scored in one round (plus at most one near-miss re-duel). |
 
 > **This is a privileged role and a liveness dependency.** It reverses R1 ("no
 > owner API, no privileged operator") and R2 ("zero human-intervention paths").
@@ -471,8 +470,9 @@ The yield is measured, not assumed: 59.5% of candidates survive the uniqueness
 proof, 95.6% of those pass the route check, and 49.3% of worded candidates
 survive the sense and label guards.
 
-At `N_PUB_TASKS = 800` and one round every two days, ~28,000 tasks is roughly
-nine months of rounds — but the private pool draws on the same corpus, and the
+At `N_PUB_TASKS = 800`, ~28,000 tasks is about 35 exams — some five weeks at one
+round a day, less when a winner's confirmation exam asks its own 800. The private
+pool draws on the same corpus too, and the
 ceiling is a hard stop rather than a target to approach. Pools are therefore
 minted in tranches of a few thousand and rotated, rather than mining the corpus
 out in a single batch.
@@ -789,12 +789,12 @@ not promised: every audit record carries `revealed_at_block`, `intake_at_block`,
 
 **Under rounds this number measures something different, and the 48h target no
 longer describes it.** Reveal-to-verdict now includes waiting for the next
-competition, which is up to `ROUND_MIN_INTERVAL_BLOCKS` (~2 days) on its own
-before the box does any work at all, and longer if the authority is late or the
-field overflowed `ROUND_MAX_ENTRANTS`. A submission revealed just after a round
-opens waits nearly two full days by construction. The measurement is still
+competition — up to the gap between rounds (about a day at the target pace) on
+its own before the box does any work at all, and longer if the authority is late
+or the field overflowed `ROUND_MAX_ENTRANTS`. A submission revealed just after a
+round opens waits a full gap by construction. The measurement is still
 honest — it is what a miner actually experiences — but the target it is compared
-against is now unreachable and should be reset to the round cadence plus the
+against mixes queue wait with evaluation and should be reset to the round cadence plus the
 evaluation window, or split into "queue wait" and "evaluation time" so the part
 a validator controls stays visible.
 
@@ -865,5 +865,5 @@ a validator controls stays visible.
 | 16 | **Hostile object keys** — a `sha256:` snapshot whose object names escape the target directory | Miners hold prefix-scoped write credentials, so a listing is untrusted input, not a path we produced. Every key is validated (no absolute paths, no `..`, resolved path must stay under the snapshot directory) and the object count and total size are bounded, all **before** the first byte is fetched. This matters beyond ordinary path hygiene: files written outside the snapshot folder are not covered by `snapshot_digest`, so an escaping write passed digest verification unnoticed. |
 | 17 | **Identity spoofing** — submit a losing checkpoint under a rival's hotkey | Authorship is the chain-recorded signer of the commitment, never a payload field (§1.1). Under the retired `e1` format this attack cooled a rival's hotkey down for up to ~6 days per strike at the cost of one UID, and the `hotkey_prefix` anti-impersonation gate did not stop it because it validated against the declared author. |
 | 18 | **Round authority declines to trigger, or loses its key** | **Not defended.** The subnet stops improving: submissions queue, the king keeps its share, and no fallback opens a round. This is the accepted cost of an owner-held trigger. Mitigation is operational — key custody and a monitored cadence — not mechanical. |
-| 19 | **Round authority times the trigger to favour a miner** | Partly defended: the exam is minted from the trigger's own block hash, which the authority cannot choose, and the minimum interval stops back-to-back rounds. Not defended: the authority still picks *when* within the allowed window, so it can wait for a favoured miner's submission to land. Whoever holds the key is trusted not to. |
+| 19 | **Round authority times the trigger to favour a miner** | Partly defended: the exam is minted from the trigger's own block hash, which the authority cannot choose, and a hotkey submits once, so extra rounds give no entrant a second draw. Not defended: the authority still picks *when* each round opens, so it can wait for a favoured miner's submission to land. Whoever holds the key is trusted not to. |
 | 20 | **Validator lockout** — a validator that cannot learn the current king | The `ek1` king pointer (§1.5) lets any box adopt the live king and reign clock from chain state. Without it, coronation lived only in local state and a validator starting with an empty state directory rejected every live challenge as `stale_parent` forever. |
