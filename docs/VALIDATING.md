@@ -394,12 +394,10 @@ public dataset repo, run the publisher alongside it:
 epago publish watch --state-dir ~/.epago/validator --repo-id <org>/<audit-repo>
 ```
 
-To publish the dashboard too, export it into the state directory; the publisher
-then ships it to `{validator}/dashboard/`:
-
-```bash
-epago dashboard watch --state-dir ~/.epago/validator --out ~/.epago/validator/dashboard
-```
+Each pass first rebuilds the dashboard into the state directory, so it ships to
+`{validator}/dashboard/` with everything else. It also writes
+`{validator}/index.json`, a list of every published file: the public bucket lists
+nothing, so this is how anyone finds a round's released files.
 
 ### External benchmark anchor
 

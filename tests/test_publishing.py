@@ -111,6 +111,7 @@ def test_sync_uploads_public_layout_and_nothing_else(state_dir):
         "audit/audit.jsonl",
         "audit/published/000000000010_r1_tasks.json",
         "dashboard/dashboard.json",
+        "index.json",
         "publications/pool_epoch_0001.json",
     ]
     # Objects land under the validator's key namespace in the shared bucket.
@@ -122,7 +123,7 @@ def test_sync_uploads_public_layout_and_nothing_else(state_dir):
 
 def test_sync_manifest_skips_unchanged_and_reships_changed(state_dir):
     first = StatePublisher(state_dir, REPO, store=FakeStore()).sync()
-    assert len(first.uploaded) == 4 and first.skipped == []
+    assert len(first.uploaded) == 5 and first.skipped == []
 
     # Second sync with a fresh store: manifest persists on disk, so nothing ships.
     store2 = FakeStore()
@@ -136,7 +137,9 @@ def test_sync_manifest_skips_unchanged_and_reships_changed(state_dir):
     (state_dir / "publications" / "pool_epoch_0002.json").write_text('{"epoch": 2}')
     store3 = FakeStore()
     third = StatePublisher(state_dir, REPO, store=store3).sync()
-    assert sorted(third.uploaded) == ["audit/audit.jsonl", "publications/pool_epoch_0002.json"]
+    assert sorted(third.uploaded) == [
+        "audit/audit.jsonl", "index.json", "publications/pool_epoch_0002.json",
+    ]
     assert len(third.skipped) == 3
     assert set(store3.objs) == _keyed(third.uploaded)
 
@@ -146,12 +149,27 @@ def test_sync_collects_errors_and_retries_next_pass(state_dir):
     report = StatePublisher(state_dir, REPO, store=failing).sync()
     assert not report.ok
     assert [p for p, _ in report.errors] == ["dashboard/dashboard.json"]
-    assert len(report.uploaded) == 3  # everything else still shipped
+    assert len(report.uploaded) == 4  # everything else still shipped, and the index
 
     # The failed file stayed out of the manifest, so the next sync retries it.
     retry = StatePublisher(state_dir, REPO, store=FakeStore()).sync()
     assert retry.ok
-    assert retry.uploaded == ["dashboard/dashboard.json"]
+    assert retry.uploaded == ["dashboard/dashboard.json", "index.json"]
+
+
+def test_sync_publishes_an_index_of_every_file(state_dir):
+    """The public bucket lists nothing; the index is how anyone finds a file."""
+    store_ = FakeStore()
+    StatePublisher(state_dir, REPO, store=store_).sync()
+
+    index = json.loads(store_.objs[f"{REPO}/index.json"])
+    paths = [f["path"] for f in index["files"]]
+    assert paths == sorted(paths)
+    assert "audit/audit.jsonl" in paths
+    assert "audit/published/000000000010_r1_tasks.json" in paths
+    assert "index.json" not in paths
+    assert not any("delayed" in p or p.endswith("state.json") for p in paths)
+    assert all(f["sha256"] for f in index["files"])
 
 
 def test_sync_never_raises_even_when_bucket_is_unreachable(state_dir):
@@ -439,10 +457,25 @@ def test_publishing_cli_sync_one_shot(state_dir, monkeypatch):
     store_ = FakeStore()
     monkeypatch.setattr(publisher_mod, "_make_store", lambda: store_)
     runner = CliRunner()
-    result = runner.invoke(app, ["sync", "--state-dir", str(state_dir), "--repo-id", REPO])
+    result = runner.invoke(
+        app, ["sync", "--state-dir", str(state_dir), "--repo-id", REPO, "--no-dashboard"]
+    )
     assert result.exit_code == 0, result.output
-    assert "4 uploaded" in result.output
-    assert len(store_.objs) == 4
+    assert "5 uploaded" in result.output  # the four files and the index
+    assert len(store_.objs) == 5
+
+
+def test_publishing_cli_sync_rebuilds_the_dashboard_first(state_dir, monkeypatch):
+    """One process ships everything: the pass exports the dashboard, then uploads it."""
+    from epago.publishing import publisher as publisher_mod
+    from epago.publishing.cli import app
+
+    store_ = FakeStore()
+    monkeypatch.setattr(publisher_mod, "_make_store", lambda: store_)
+    result = CliRunner().invoke(app, ["sync", "--state-dir", str(state_dir), "--repo-id", REPO])
+    assert result.exit_code == 0, result.output
+    assert f"{REPO}/dashboard/index.html" in store_.objs
+    assert store_.objs[f"{REPO}/dashboard/dashboard.json"] != b'{"schema": "epd1"}'
 
 
 def test_publishing_cli_mirror_king_records_manifest(tmp_path, state_dir, monkeypatch):
