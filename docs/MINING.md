@@ -76,7 +76,7 @@ The minter's last stage phrases each question with a model through OpenRouter
 library: `epago eval serve --corpus practice-v1/corpus.db` serves the same search-and-read
 harness a duel runs.
 
-**Real exam questions** follow every round: once its embargo ends, the round's file is
+**Real exam questions** follow every round: when it ends, the round's file is
 published with its tasks and the papers they cite. Those tasks are retired — no later
 round asks them again — so they are study material, not an answer key.
 

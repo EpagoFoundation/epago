@@ -707,13 +707,14 @@ def test_audit16_matches_record_and_sla_report(tmp_path):
     assert report["p50_blocks"] >= constants.ROUND_MIN_INTERVAL_BLOCKS
     assert report["sla_target_blocks"] > 0
 
-    # Public tasks staged for delayed publication, not yet released. A sealed
-    # release stages a second artifact beside the round record -- the round's
-    # questions in full -- so name the one under test rather than counting the
-    # directory, which otherwise fails whenever the contract changes release.
-    delayed_dir = tmp_path / "state" / "audit" / "delayed"
-    assert len(list(delayed_dir.glob("*_round[0-9]*.json"))) == 1
-    assert list((tmp_path / "state" / "audit" / "published").glob("*.json")) == []
+    # A round's record publishes when the round ends: its tasks are retired and
+    # never asked again, so nothing is left to hold back. A sealed release
+    # stages a second artifact beside the round record -- the round's questions
+    # in full -- so name the one under test rather than counting the directory,
+    # which otherwise fails whenever the contract changes release.
+    published_dir = tmp_path / "state" / "audit" / "published"
+    assert len(list(published_dir.glob("*_round[0-9]*.json"))) == 1
+    assert list((tmp_path / "state" / "audit" / "delayed").glob("*.json")) == []
 
 
 def test_transient_duel_error_requeues_front(tmp_path):
@@ -2214,8 +2215,18 @@ def test_a_staged_round_publishes_the_papers_its_tasks_rest_on(tmp_path):
     assert missing not in evidence
 
 
-def test_a_round_is_not_published_before_its_delay_elapses(tmp_path):
-    """Releasing immediately would hand the next challenger a live answer key."""
+def test_a_round_publishes_its_tasks_when_it_ends(tmp_path):
+    """Its tasks are retired and never asked again, so nothing is held back."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._stage_public_pool_round(2, h.service._public_tasks(seed=5, n=10))
+
+    released = h.service.audit_log.release_due(h.service.deps.clock())
+    assert [p for p in released if "publicpool" in p.name]
+
+
+def test_a_configured_delay_still_holds_a_round_back(tmp_path, monkeypatch):
+    """A validator that sets EPAGO_AUDIT_PUBLISH_DELAY_BLOCKS keeps the wait."""
+    monkeypatch.setattr(constants, "AUDIT_PUBLISH_DELAY_BLOCKS", 50_400)
     h = _sealed_release_harness(tmp_path)
     h.service._stage_public_pool_round(2, h.service._public_tasks(seed=5, n=10))
 

@@ -527,7 +527,7 @@ flowchart LR
 | Near-miss | `0 < lcb ≤ δ`: no penalty, ONE re-duel via a NEW reveal (fresh seed) | `NEAR_MISS_RETRIES` |
 | Rollouts | 40 turns, 300s, 32k ctx, greedy seed 42, ≤200-char answers, 16-way batched | `constants.py` |
 | Pools | rotate ~6 days, publish in full at rotation | `PRIVATE_POOL_ROTATION_BLOCKS` |
-| Audit | signed records; `ea1` checkpoint every 100; public tasks release after ~7 days | `AUDIT_*` |
+| Audit | signed records; `ea1` checkpoint every 100; public tasks release when each round ends | `AUDIT_*` |
 | Anchor | every ~7 days, ≤100 tasks, alert at 10pp divergence | `ANCHOR_*` |
 | Weights | every 300 blocks, commit-reveal (CR4) via SDK | `WEIGHT_INTERVAL_BLOCKS` |
 

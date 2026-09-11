@@ -247,7 +247,10 @@ ANCHOR_INTERVAL_BLOCKS: int = _env("ANCHOR_INTERVAL_BLOCKS", 50_400)  # ~7 days
 ANCHOR_DIVERGENCE_ALERT: float = _env("ANCHOR_DIVERGENCE_ALERT", 0.10)
 
 # --- audit -------------------------------------------------------------------
-AUDIT_PUBLISH_DELAY_BLOCKS: int = _env("AUDIT_PUBLISH_DELAY_BLOCKS", 50_400)  # public tasks after ~7 days
+#: Blocks between staging a round's record and tasks and publishing them. 0: a
+#: round's tasks are retired when it ends and never asked again, so they publish
+#: with its results.
+AUDIT_PUBLISH_DELAY_BLOCKS: int = _env("AUDIT_PUBLISH_DELAY_BLOCKS", 0)
 AUDIT_CHAIN_COMMIT_EVERY: int = _env("AUDIT_CHAIN_COMMIT_EVERY", 100)
 # Cold-start floor, used only until this validator has run its own calibration
 # duel. 2/400 assumed two runs of one checkpoint differ on half a percent of

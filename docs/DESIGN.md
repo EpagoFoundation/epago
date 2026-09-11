@@ -430,7 +430,7 @@ sequencing, using three artifacts:
 |---|---|---|---|
 | **Pool** | every minted task, with answers | when the pool retires | `eval.public_pool_digest` |
 | **Manifest** | the pool's task ids, nothing else | immediately | `eval.public_pool_manifest_digest` |
-| **Round file** | the tasks one round asked, in full | `AUDIT_PUBLISH_DELAY_BLOCKS` after the round | that round's `public_task_ids_digest` |
+| **Round file** | the tasks one round asked, in full | when the round ends (`AUDIT_PUBLISH_DELAY_BLOCKS = 0`) | that round's `public_task_ids_digest` |
 
 Both digests are fixed in the contract **before** a round opens, so the exam
 existed before any challenger's weights were frozen and neither artifact can be
@@ -721,8 +721,9 @@ canonical JSON:
 
 The first 16 hex of the record digest is the `audit16` in the `ev3` verdict; the
 `ea1` checkpoint chain covers the whole log. Full audit bundles (rendered task
-text, rollout transcripts) are published after
-`AUDIT_PUBLISH_DELAY_BLOCKS = 50400` (~7 days); the on-chain digests are immediate.
+text, rollout transcripts) publish when the round ends
+(`AUDIT_PUBLISH_DELAY_BLOCKS = 0`: its tasks are retired, never asked again); the
+on-chain digests are immediate.
 
 **Replay, level 1 — exact** (`scripts/replay_verdict`), runnable by anyone on a CPU:
 the tool needs no model, no GPU and no torch, and every check below either PASSes,
@@ -771,8 +772,8 @@ specified above are simultaneously a dataset. Each duel emits, per task, the tas
 models' answers, and a mechanically verified correct/incorrect label, over documents that
 postdate the models' training — the private pool is continuously refreshed from a dated
 feed (§7). `AuditRecord` carries the per-task difference vector and every pin needed to
-reproduce it; full bundles (rendered task text, rollout transcripts) publish after
-`AUDIT_PUBLISH_DELAY_BLOCKS`, and each private pool publishes in full — tasks, answers,
+reproduce it; full bundles (rendered task text, rollout transcripts) publish when
+each round ends, and each private pool publishes in full — tasks, answers,
 evidence paths — at rotation. What accumulates is verified `(task, answer,
 correct/incorrect)` records: the scarcest input in post-training, and one that cannot be
 scraped because it does not exist anywhere else. Treat this as a requirement of the

@@ -181,14 +181,15 @@ namespace per validator:
 | `mailbox/credentials.json` | one sealed envelope per miner | anyone can fetch; each opens one |
 | `{validator}/publications/` | private task pools, published at rotation | anyone |
 | `{validator}/audit/audit.jsonl` | the append-only duel record | anyone |
-| `{validator}/audit/published/` | rendered tasks, rollout transcripts and sealed-pool round files, after the embargo | anyone |
+| `{validator}/audit/published/` | rendered tasks, rollout transcripts and sealed-pool round files, when each round ends | anyone |
 | `{validator}/dashboard/` | `dashboard.json` and the static site | anyone |
+| `{validator}/index.json` | a list of every published file | anyone |
 
 Four properties worth knowing:
 
-- **The embargo is enforced by path.** `audit/delayed/` is never uploaded. Only
-  what `AuditLog.release_due` has moved into `audit/published/` ships, so a task
-  set under its transparency delay cannot leak through a sync.
+- **Anything held back stays back by path.** `audit/delayed/` is never uploaded.
+  Only what `AuditLog.release_due` has moved into `audit/published/` ships; with
+  the default delay of 0 that is each round's files as soon as it ends.
 - **Objects are never deleted.** A retired pool or an old audit bundle stays
   where it is, because a verdict that referenced it must remain replayable.
   Retiring content means publishing a new revision that supersedes it.
