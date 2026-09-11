@@ -525,8 +525,10 @@ with `DELTA_C = 0.05` and `DELTA_NOISE_MULTIPLIER = 3.0`. `king_acc_ema` is a
 accuracy (`update_acc_ema`, smoothing `α = 2/(k+1)`). The floor therefore scales
 with remaining headroom: hard-to-improve kings face a smaller required effect.
 
-The **noise floor** is self-calibrated: validators continuously run king-vs-king
-calibration duels on fresh holdouts. Because it is the same weights twice, every
+The **noise floor** is self-calibrated: validators run a king-vs-king calibration
+duel once a day (`CALIBRATION_INTERVAL_BLOCKS`) on `CALIBRATION_TASKS = 200` fresh
+tasks, and rescale the result to the public exam size by `sqrt(n/N_PUB_TASKS)`
+(it is a standard error, so it falls as `1/sqrt(n)`). Because it is the same weights twice, every
 nonzero `d_i` there is pure harness noise. The floor is the **standard error of the
 paired score gap**, `stdev(d_i)/sqrt(n)` — *not* the per-task flip rate.
 That distinction is load-bearing and was a real bug: a duel decides on the *mean*

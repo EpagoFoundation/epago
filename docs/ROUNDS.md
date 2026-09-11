@@ -100,6 +100,10 @@ the queue, the upload mailbox keeps refreshing, and the dashboard shows the roun
 running, with its entrants. There is no live progress; the results, the audit
 records and the round's tasks publish when it ends.
 
+Calibration (the king against itself, which measures the noise floor) runs the
+same way, once a day on 200 tasks. A round requested while it runs opens when it
+finishes, since both use the eval GPUs.
+
 ## Cadence
 
 Each request opens one round. There is no minimum gap between rounds

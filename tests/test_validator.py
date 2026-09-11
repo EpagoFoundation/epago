@@ -1611,7 +1611,7 @@ def test_the_loop_keeps_taking_submissions_while_a_round_runs(tmp_path):
     for _ in range(3):                      # the pool commitment may take a tick
         h.service.tick()
         h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
-        if h.service._round_thread is not None:
+        if h.service._job_thread is not None:
             break
     assert h.in_duel.wait(10), "round 1 never reached its duel"
 
@@ -1632,13 +1632,13 @@ def test_the_loop_keeps_taking_submissions_while_a_round_runs(tmp_path):
     h.service.tick()
     assert h.state.last_round_run == 0
     h.gate.set()
-    h.service._round_thread.join(10)
+    h.service._job_thread.join(10)
     assert h.state.last_round_run == 1
     assert _saved(tmp_path)["round_in_progress"] is None
 
     h.chain.advance(1)
     h.service.tick()
-    h.service._round_thread.join(10)
+    h.service._job_thread.join(10)
     assert h.state.last_round_run == 2
     assert bob not in [q.digest for q in h.state.queue]
 
@@ -1655,6 +1655,74 @@ def test_a_round_cut_short_by_a_restart_is_cleared(tmp_path):
     service = type(h.service)(replace(h.service.deps, state=state))
     assert service.state.round_in_progress is None
     assert service.state.last_error["code"] == "round_interrupted"
+
+
+def test_calibration_runs_once_a_day_on_fewer_tasks(tmp_path):
+    """It used to run every 50 ticks on a full exam, which at 800 tasks would
+    keep the loop busy almost all the time."""
+    h = _generator_release_harness(tmp_path)
+    asked: list[int] = []
+    generate = h.service.deps.generate_tasks
+
+    def generator(**kw):
+        asked.append(kw["n"])
+        return generate(**kw)
+
+    h.service.deps.generate_tasks = generator
+    h.service.deps.run_calibration_duel = lambda *a, **k: 0.02
+    h.service.tick()                        # the first run waits one interval
+    for _ in range(3):
+        h.chain.advance(constants.CALIBRATION_INTERVAL_BLOCKS // 4)
+        h.service.tick()
+    assert constants.CALIBRATION_TASKS not in asked
+
+    h.chain.advance(constants.CALIBRATION_INTERVAL_BLOCKS // 4)
+    h.service.tick()
+    h.service.tick()
+    assert asked.count(constants.CALIBRATION_TASKS) == 1
+    # The harness mints 4 tasks; the gap's standard error is rescaled to the exam.
+    assert h.state.noise_floor_samples == [
+        pytest.approx(0.02 * (4 / constants.N_PUB_TASKS) ** 0.5)
+    ]
+
+
+def test_calibration_runs_in_the_background_and_holds_a_round_request(tmp_path):
+    """The loop keeps taking submissions while it runs, and a round asked for
+    meanwhile opens once it ends: both need the eval GPUs."""
+    import threading
+
+    h = _background_harness(tmp_path)
+    gate, calibrating = threading.Event(), threading.Event()
+
+    def calibrate(*a, **k):
+        calibrating.set()
+        assert gate.wait(10), "the test never let calibration finish"
+        return 0.01
+
+    h.service.deps.run_calibration_duel = calibrate
+    h.service.tick()
+    h.chain.advance(constants.CALIBRATION_INTERVAL_BLOCKS)
+    h.service.tick()
+    assert calibrating.wait(10), "calibration never started"
+
+    alice, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.chain.advance(1)
+    h.trigger.request()
+    h.service.tick()
+    assert alice in [q["digest"] for q in _saved(tmp_path)["queue"]]
+    assert h.state.last_round_run == 0      # the request waits
+
+    gate.set()
+    h.service._job_thread.join(10)
+    assert h.state.noise_floor_samples
+    h.gate.set()                            # let the round's duel through
+    for _ in range(3):                      # the pool commitment may take a tick
+        h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+        h.service.tick()
+        h.service._job_thread.join(10)
+        if h.state.last_round_run == 1:
+            break
+    assert h.state.last_round_run == 1
 
 
 def test_round_trigger_rejects_a_bad_key():
@@ -2140,8 +2208,6 @@ def test_calibration_under_a_sealed_release_draws_from_the_generator(tmp_path):
     release cannot serve, so the noise floor could never update. It generates from
     the release the pool was cut for instead: calibration recurs, and drawing its
     exams from the pool would spend the pool on measuring noise."""
-    from epago.validator.service import CALIBRATION_EVERY_TICKS
-
     h = _sealed_release_harness(tmp_path)
     releases: list[str] = []
 
@@ -2152,7 +2218,9 @@ def test_calibration_under_a_sealed_release_draws_from_the_generator(tmp_path):
     h.service.deps.generate_tasks = generator
     h.service.deps.run_calibration_duel = lambda *a, **k: 0.005
     h.service.tick()  # the genesis king is in place
-    h.service.state.tick_count = CALIBRATION_EVERY_TICKS
+    h.service.state.last_calibration_block = (
+        h.chain.current_block() - constants.CALIBRATION_INTERVAL_BLOCKS
+    )
 
     h.service._maybe_calibrate(h.chain.current_block())
 

@@ -261,3 +261,9 @@ AUDIT_CHAIN_COMMIT_EVERY: int = _env("AUDIT_CHAIN_COMMIT_EVERY", 100)
 # errs high deliberately. Falls as 1/sqrt(n), so it is conservative at the
 # shipped exam size.
 CROSS_GPU_NOISE_BUDGET: float = _env("CROSS_GPU_NOISE_BUDGET", 0.03)
+# King-vs-king calibration runs the king twice, so its cost grows with the task
+# count. It measures a standard error, which rescales to the exam size, so once
+# a day on a quarter of the public exam's size is enough; the loop keeps taking
+# submissions while it runs.
+CALIBRATION_INTERVAL_BLOCKS: int = _env("CALIBRATION_INTERVAL_BLOCKS", 7_200)  # ~1 day
+CALIBRATION_TASKS: int = _env("CALIBRATION_TASKS", 200)
