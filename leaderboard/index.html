@@ -938,6 +938,7 @@ class Component extends DCLogic {
     }));
 
     const corDelta = d.lineage && d.lineage.length ? d.lineage[d.lineage.length - 1].delta : kp.delta_clamp;
+    const sinceGenesis = Math.round((kp.king_acc_ema - (S.length ? S[0].ema : 0.5)) * 1000) / 10;
 
     return Object.assign(base, roundVars, {
       chainName: d.chain.name, netuid: d.chain.netuid, network: d.chain.network,
@@ -945,7 +946,7 @@ class Component extends DCLogic {
       phaseIsBurn: kp.phase === 'burn', phaseIsLive: kp.phase === 'live',
 
       kingPct: this.pct2(kp.king_acc_ema),
-      sinceGenesisTxt: '+' + ((kp.king_acc_ema - (S.length ? S[0].ema : 0.5)) * 100).toFixed(1) + ' pp since genesis',
+      sinceGenesisTxt: (sinceGenesis >= 0 ? '+' : '') + sinceGenesis.toFixed(1) + ' pp since genesis',
       coronationsTxt: this.fmtInt(kp.organic_dethrones) + (kp.organic_dethrones === 1 ? ' coronation' : ' coronations'),
       coronationsCountTxt: this.fmtInt(kp.organic_dethrones),
       duelsTotalTxt: this.fmtInt(kp.duels_total),
