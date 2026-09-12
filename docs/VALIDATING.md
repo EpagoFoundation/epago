@@ -181,14 +181,15 @@ namespace per validator:
 | `mailbox/credentials.json` | one sealed envelope per miner | anyone can fetch; each opens one |
 | `{validator}/publications/` | private task pools, published at rotation | anyone |
 | `{validator}/audit/audit.jsonl` | the append-only duel record | anyone |
-| `{validator}/audit/published/` | rendered tasks, rollout transcripts and sealed-pool round files, after the embargo | anyone |
+| `{validator}/audit/published/` | rendered tasks, rollout transcripts and sealed-pool round files, when each round ends | anyone |
 | `{validator}/dashboard/` | `dashboard.json` and the static site | anyone |
+| `{validator}/index.json` | a list of every published file | anyone |
 
 Four properties worth knowing:
 
-- **The embargo is enforced by path.** `audit/delayed/` is never uploaded. Only
-  what `AuditLog.release_due` has moved into `audit/published/` ships, so a task
-  set under its transparency delay cannot leak through a sync.
+- **Anything held back stays back by path.** `audit/delayed/` is never uploaded.
+  Only what `AuditLog.release_due` has moved into `audit/published/` ships; with
+  the default delay of 0 that is each round's files as soon as it ends.
 - **Objects are never deleted.** A retired pool or an old audit bundle stays
   where it is, because a verdict that referenced it must remain replayable.
   Retiring content means publishing a new revision that supersedes it.
@@ -258,13 +259,16 @@ immediately; it is what auditors verify rounds against while the pool is still i
 service. The pool file stays sealed until it retires.
 
 **Rounds are disjoint, so a pool is consumed.** Each round retires the
-`N_PUB_TASKS` it asked. Size a pool for how long you want it to last:
+`N_PUB_TASKS` it asked, and a round with a winner retires another `N_PUB_TASKS`
+for its confirmation exam. Size a pool for how long you want it to last:
 
-| rounds served | tasks needed at `N_PUB_TASKS = 800` | at one round per 2 days |
+| rounds served | tasks needed at `N_PUB_TASKS = 800` | at one round a day |
 |---|---|---|
-| 4 | 3,200 | ~1 week |
-| 8 | 6,400 | ~2 weeks |
-| 15 | 12,000 | ~1 month |
+| 7 | 5,600 | ~1 week |
+| 14 | 11,200 | ~2 weeks |
+| 30 | 24,000 | ~1 month |
+
+Add 800 for every round that crowns a winner.
 
 When the unserved remainder falls below one exam the validator refuses the round
 and records `taskgen_failed`; mint and commit a fresh pool before that happens.
@@ -379,7 +383,7 @@ flowchart LR
 | **Ingestion** | Builds and refreshes its own private task pool from post-cutoff ingestion and template synthesis, gating every task through the automated QA pipeline (corpus re-derivability, ambiguity check, source-mask verification, difficulty band). |
 | **Rotation** | Rotates the private pool every ~6 days and publishes the outgoing pool in full — tasks, answers, evidence paths — making its own past private verdicts publicly replayable. Not optional; no off switch. |
 | **Duels** | Watches the chain for revealed `e2` challenges and queues them. When the round authority publishes an `er1`, it runs intake gates and probes over the whole queued field, then duels every entrant against the king on one exam; commits an `ev3` verdict for every entrant in a round and appends the full audit record. |
-| **Calibration** | Schedules king-vs-king calibration duels and recomputes the harness noise floor by the pinned formula; the adaptive `delta` clamp follows automatically. |
+| **Calibration** | Once a day (`CALIBRATION_INTERVAL_BLOCKS`), when no round is running, runs the king against itself on 200 fresh tasks (`CALIBRATION_TASKS`) in the background, rescales the result to the exam size and recomputes the harness noise floor by the pinned formula; the adaptive `delta` clamp follows automatically. A round requested meanwhile opens when it finishes. |
 | **Audit publication** | Publishes `ea1` checkpoints every 100 audit records and releases full audit bundles after the publication delay; runs the external benchmark anchor on schedule and publishes the scores. |
 | **King mirroring** | Keeps a local mirror of the current king snapshot so a deleted upstream repo can never orphan the crown. |
 | **Weight setting** | Derives the king and arena weights as a pure function of chain state every 300 blocks and submits them via commit-reveal. There is no way to hand-set weights through Epago tooling. |
@@ -390,6 +394,11 @@ public dataset repo, run the publisher alongside it:
 ```bash
 epago publish watch --state-dir ~/.epago/validator --repo-id <org>/<audit-repo>
 ```
+
+Each pass first rebuilds the dashboard into the state directory, so it ships to
+`{validator}/dashboard/` with everything else. It also writes
+`{validator}/index.json`, a list of every published file: the public bucket lists
+nothing, so this is how anyone finds a round's released files.
 
 ### External benchmark anchor
 

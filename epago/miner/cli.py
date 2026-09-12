@@ -201,17 +201,31 @@ def _load_hotkey_seed(wallet_name: str, wallet_hotkey: str) -> bytes:
     except ImportError as exc:  # pragma: no cover - environment-dependent
         raise _fail("this command needs the bittensor wallet: pip install 'epago[chain]'") from exc
 
+    import json as _json
+
+    from nacl.signing import SigningKey
+
     wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
     keypair = wallet.hotkey
-    seed = getattr(keypair, "private_key", None)
-    if not seed:
-        raise _fail(
-            f"could not read a private key for hotkey {wallet_hotkey!r}. "
-            "Submitting privately needs an Ed25519 hotkey: create one with "
-            "`btcli wallet new-hotkey --key-type ed25519`."
-        )
-    # substrate keypairs carry a 64-byte expanded key; the seed is the first 32.
-    return bytes(seed)[:32]
+    need_ed25519 = (
+        "Submitting privately needs an Ed25519 hotkey: create one with "
+        "`btcli wallet new-hotkey --crypto-type ed25519`."
+    )
+    key = getattr(keypair, "private_key", None)
+    if key:
+        # substrate keypairs carry a 64-byte expanded key; the seed is the first 32.
+        seed = bytes(key)[:32]
+    else:
+        # bittensor-wallet 4 keypairs expose no private key; the hotkey file
+        # keeps the seed.
+        try:
+            data = _json.loads(Path(wallet.hotkey_file.path).read_text())
+            seed = bytes.fromhex(str(data["secretSeed"]).removeprefix("0x"))
+        except Exception:  # noqa: BLE001 - missing, encrypted or unreadable
+            raise _fail(f"could not read a private key for hotkey {wallet_hotkey!r}. {need_ed25519}")
+    if len(seed) != 32 or bytes(SigningKey(seed).verify_key) != bytes(keypair.public_key):
+        raise _fail(f"hotkey {wallet_hotkey!r} is not an Ed25519 key. {need_ed25519}")
+    return seed
 
 
 @app.command()
@@ -236,7 +250,9 @@ def auth(
 
     try:
         if mailbox.startswith(("http://", "https://")):
-            with urllib.request.urlopen(mailbox, timeout=60) as response:
+            # The public bucket refuses Python's default user agent (HTTP 403).
+            request = urllib.request.Request(mailbox, headers={"User-Agent": "epago-miner"})
+            with urllib.request.urlopen(request, timeout=60) as response:
                 raw = response.read()
         else:
             raw = Path(mailbox).expanduser().read_bytes()

@@ -47,6 +47,9 @@ from epago.model.store import file_sha256
 logger = logging.getLogger(__name__)
 
 MANIFEST_FILENAME = ".publish_manifest.json"
+#: The published listing of every file (``{repo_id}/index.json``) and its local copy.
+INDEX_KEY = "index.json"
+INDEX_FILENAME = ".publish_index.json"
 MIRRORS_FILENAME = "mirrors.json"
 MIRRORS_REPO_PATH = f"publications/{MIRRORS_FILENAME}"
 
@@ -200,11 +203,40 @@ class StatePublisher:
             manifest[remote] = digest
             report.uploaded.append(remote)
 
+        self._publish_index(store, manifest, report)
         try:
             self._save_manifest(manifest)
         except OSError as exc:
             report.errors.append((MANIFEST_FILENAME, f"{type(exc).__name__}: {exc}"))
         return report
+
+    def _publish_index(self, store: Any, manifest: dict[str, str], report: PublishReport) -> None:
+        """Upload ``index.json``: every published file, by path and sha256.
+
+        A public bucket serves objects by exact key and lists nothing, so a
+        file nobody links to is a file nobody finds -- a round's released
+        tasks carry a block number in their name. The index is the listing.
+        """
+        files = [
+            {"path": remote, "sha256": digest}
+            for remote, digest in sorted(manifest.items())
+            if remote != INDEX_KEY
+        ]
+        if not files:
+            return
+        local = self.state_dir / INDEX_FILENAME
+        try:
+            local.write_text(json.dumps({"files": files}, sort_keys=True, indent=1))
+            digest = file_sha256(local)
+            if manifest.get(INDEX_KEY) == digest:
+                report.skipped.append(INDEX_KEY)
+                return
+            store.put_object(f"{self.repo_id}/{INDEX_KEY}", local)
+        except Exception as exc:  # noqa: BLE001 - sync must never raise
+            report.errors.append((INDEX_KEY, f"{type(exc).__name__}: {exc}"))
+            return
+        manifest[INDEX_KEY] = digest
+        report.uploaded.append(INDEX_KEY)
 
 
 # --- king mirroring -------------------------------------------------------------

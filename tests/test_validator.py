@@ -707,13 +707,14 @@ def test_audit16_matches_record_and_sla_report(tmp_path):
     assert report["p50_blocks"] >= constants.ROUND_MIN_INTERVAL_BLOCKS
     assert report["sla_target_blocks"] > 0
 
-    # Public tasks staged for delayed publication, not yet released. A sealed
-    # release stages a second artifact beside the round record -- the round's
-    # questions in full -- so name the one under test rather than counting the
-    # directory, which otherwise fails whenever the contract changes release.
-    delayed_dir = tmp_path / "state" / "audit" / "delayed"
-    assert len(list(delayed_dir.glob("*_round[0-9]*.json"))) == 1
-    assert list((tmp_path / "state" / "audit" / "published").glob("*.json")) == []
+    # A round's record publishes when the round ends: its tasks are retired and
+    # never asked again, so nothing is left to hold back. A sealed release
+    # stages a second artifact beside the round record -- the round's questions
+    # in full -- so name the one under test rather than counting the directory,
+    # which otherwise fails whenever the contract changes release.
+    published_dir = tmp_path / "state" / "audit" / "published"
+    assert len(list(published_dir.glob("*_round[0-9]*.json"))) == 1
+    assert list((tmp_path / "state" / "audit" / "delayed").glob("*.json")) == []
 
 
 def test_transient_duel_error_requeues_front(tmp_path):
@@ -1201,14 +1202,11 @@ def test_a_round_from_a_non_authority_hotkey_is_ignored(tmp_path):
     assert h.state.last_round_run == 0
 
 
-def test_a_round_opened_too_soon_is_ignored(tmp_path):
-    """The 2-day cadence is enforced by every validator, not by the caller.
-
-    Otherwise the authority could run rounds back to back and hand a favoured
-    miner as many exam draws as it liked.
-    """
+def test_a_round_opened_too_soon_is_ignored(tmp_path, monkeypatch):
+    """A configured minimum gap is enforced by every validator, not by the caller."""
     from epago.core.reveal import build_round_start
 
+    monkeypatch.setattr(constants, "ROUND_MIN_INTERVAL_BLOCKS", 14_400)
     h = make_harness(tmp_path)
     add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
     settle(h)                                   # round 1 lands legitimately
@@ -1227,6 +1225,8 @@ def test_a_round_opened_too_soon_is_ignored(tmp_path):
 
     assert len(h.holder["duel_specs"]) == duels_before
     assert h.state.last_round_run == 1
+    # Refused for the gap, not for running out of tasks.
+    assert (h.state.last_error or {}).get("code") != "taskgen_failed"
 
 
 def test_a_replayed_round_number_is_ignored(tmp_path):
@@ -1505,9 +1505,45 @@ def test_api_trigger_opens_a_round_from_the_current_block(tmp_path):
     assert spec.block_hash_at_reveal == h.chain.block_hash(h.state.last_round_block)
 
 
-def test_api_trigger_respects_the_minimum_interval(tmp_path):
+def test_each_api_request_opens_a_round(tmp_path):
+    """No minimum gap by default: the owner paces rounds, so a request made
+    right after a round finishes opens the next one."""
     from epago.validator.roundapi import RoundTrigger
 
+    # Generator-served, so round 2 is not refused for want of pool tasks.
+    h = _generator_release_harness(tmp_path)
+    h.cfg = replace(h.service.cfg, chain=replace(h.service.cfg.chain, round_authority_hotkey=""))
+    h.service.cfg = h.cfg
+    trigger = RoundTrigger()
+    h.service._round_trigger = trigger
+
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.service.tick()
+    h.chain.advance(1)                      # a round takes reveals strictly before it
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    duels_after_first = len(h.holder["duel_specs"])
+    assert duels_after_first >= 1
+    assert h.state.last_round_run == 1
+
+    add_challenger(h, "bob", "hk-bob", "ck-bob-001", uid=3, digest_char="b",
+                   king_digest=h.state.king.ref.digest)
+    h.service.tick()
+    h.chain.advance(100)                    # well under a day
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    assert len(h.holder["duel_specs"]) > duels_after_first
+    assert h.state.last_round_run == 2
+
+
+def test_a_configured_minimum_interval_still_holds(tmp_path, monkeypatch):
+    """A validator that sets EPAGO_ROUND_MIN_INTERVAL_BLOCKS still ignores a
+    request that comes too soon."""
+    from epago.validator.roundapi import RoundTrigger
+
+    monkeypatch.setattr(constants, "ROUND_MIN_INTERVAL_BLOCKS", 14_400)
     h = make_harness(tmp_path)
     h.cfg = replace(h.cfg, chain=replace(h.cfg.chain, round_authority_hotkey=""))
     h.service.cfg = h.cfg
@@ -1532,6 +1568,161 @@ def test_api_trigger_respects_the_minimum_interval(tmp_path):
     for _ in range(3):
         h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
     assert len(h.holder["duel_specs"]) == duels_after_first  # no new round
+    assert (h.state.last_error or {}).get("code") != "taskgen_failed"
+
+
+def _background_harness(tmp_path):
+    """Rounds on their own thread, opened by the API latch, with a duel that
+    waits until the test lets it finish."""
+    import threading
+
+    from epago.validator.roundapi import RoundTrigger
+
+    h = _generator_release_harness(tmp_path)
+    h.cfg = replace(h.service.cfg, chain=replace(h.service.cfg.chain, round_authority_hotkey=""))
+    h.service.cfg = h.cfg
+    h.service.background_rounds = True
+    h.trigger = RoundTrigger()
+    h.service._round_trigger = h.trigger
+    h.gate, h.in_duel = threading.Event(), threading.Event()
+    duel = h.service.deps.run_duel
+
+    def gated(spec, *args):
+        h.in_duel.set()
+        assert h.gate.wait(10), "the test never let the duel finish"
+        return duel(spec, *args)
+
+    h.service.deps.run_duel = gated
+    return h
+
+
+def _saved(tmp_path) -> dict:
+    return json.loads((tmp_path / "state" / "state.json").read_text())
+
+
+def test_the_loop_keeps_taking_submissions_while_a_round_runs(tmp_path):
+    """A round can take hours; the queue, the mailbox and the saved state must
+    not stand still that long."""
+    h = _background_harness(tmp_path)
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.service.tick()
+    h.chain.advance(1)
+    h.trigger.request()
+    for _ in range(3):                      # the pool commitment may take a tick
+        h.service.tick()
+        h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+        if h.service._job_thread is not None:
+            break
+    assert h.in_duel.wait(10), "round 1 never reached its duel"
+
+    running = _saved(tmp_path)["round_in_progress"]
+    assert running["round"] == 1
+    assert [e["author_hotkey"] for e in running["entrants"]] == ["hk-alice"]
+
+    # Mid-round, a new submission is taken in and saved.
+    bob, _, _ = add_challenger(h, "bob", "hk-bob", "ck-bob-001", uid=3, digest_char="b")
+    h.chain.advance(1)
+    h.service.tick()
+    saved = _saved(tmp_path)
+    assert bob in [q["digest"] for q in saved["queue"]]
+    assert saved["round_in_progress"]["round"] == 1
+
+    # A request made now waits for round 1 to end, then opens round 2.
+    h.trigger.request()
+    h.service.tick()
+    assert h.state.last_round_run == 0
+    h.gate.set()
+    h.service._job_thread.join(10)
+    assert h.state.last_round_run == 1
+    assert _saved(tmp_path)["round_in_progress"] is None
+
+    h.chain.advance(1)
+    h.service.tick()
+    h.service._job_thread.join(10)
+    assert h.state.last_round_run == 2
+    assert bob not in [q.digest for q in h.state.queue]
+
+
+def test_a_round_cut_short_by_a_restart_is_cleared(tmp_path):
+    """Its unsettled entrants stay queued; the dashboard must not show it running."""
+    from epago.validator.state import ValidatorState
+
+    h = make_harness(tmp_path)
+    h.state.round_in_progress = {"round": 4, "block": 100, "entrants": []}
+    h.state.save()
+
+    state = ValidatorState.load(tmp_path / "state")
+    service = type(h.service)(replace(h.service.deps, state=state))
+    assert service.state.round_in_progress is None
+    assert service.state.last_error["code"] == "round_interrupted"
+
+
+def test_calibration_runs_once_a_day_on_fewer_tasks(tmp_path):
+    """It used to run every 50 ticks on a full exam, which at 800 tasks would
+    keep the loop busy almost all the time."""
+    h = _generator_release_harness(tmp_path)
+    asked: list[int] = []
+    generate = h.service.deps.generate_tasks
+
+    def generator(**kw):
+        asked.append(kw["n"])
+        return generate(**kw)
+
+    h.service.deps.generate_tasks = generator
+    h.service.deps.run_calibration_duel = lambda *a, **k: 0.02
+    h.service.tick()                        # the first run waits one interval
+    for _ in range(3):
+        h.chain.advance(constants.CALIBRATION_INTERVAL_BLOCKS // 4)
+        h.service.tick()
+    assert constants.CALIBRATION_TASKS not in asked
+
+    h.chain.advance(constants.CALIBRATION_INTERVAL_BLOCKS // 4)
+    h.service.tick()
+    h.service.tick()
+    assert asked.count(constants.CALIBRATION_TASKS) == 1
+    # The harness mints 4 tasks; the gap's standard error is rescaled to the exam.
+    assert h.state.noise_floor_samples == [
+        pytest.approx(0.02 * (4 / constants.N_PUB_TASKS) ** 0.5)
+    ]
+
+
+def test_calibration_runs_in_the_background_and_holds_a_round_request(tmp_path):
+    """The loop keeps taking submissions while it runs, and a round asked for
+    meanwhile opens once it ends: both need the eval GPUs."""
+    import threading
+
+    h = _background_harness(tmp_path)
+    gate, calibrating = threading.Event(), threading.Event()
+
+    def calibrate(*a, **k):
+        calibrating.set()
+        assert gate.wait(10), "the test never let calibration finish"
+        return 0.01
+
+    h.service.deps.run_calibration_duel = calibrate
+    h.service.tick()
+    h.chain.advance(constants.CALIBRATION_INTERVAL_BLOCKS)
+    h.service.tick()
+    assert calibrating.wait(10), "calibration never started"
+
+    alice, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.chain.advance(1)
+    h.trigger.request()
+    h.service.tick()
+    assert alice in [q["digest"] for q in _saved(tmp_path)["queue"]]
+    assert h.state.last_round_run == 0      # the request waits
+
+    gate.set()
+    h.service._job_thread.join(10)
+    assert h.state.noise_floor_samples
+    h.gate.set()                            # let the round's duel through
+    for _ in range(3):                      # the pool commitment may take a tick
+        h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+        h.service.tick()
+        h.service._job_thread.join(10)
+        if h.state.last_round_run == 1:
+            break
+    assert h.state.last_round_run == 1
 
 
 def test_round_trigger_rejects_a_bad_key():
@@ -2017,8 +2208,6 @@ def test_calibration_under_a_sealed_release_draws_from_the_generator(tmp_path):
     release cannot serve, so the noise floor could never update. It generates from
     the release the pool was cut for instead: calibration recurs, and drawing its
     exams from the pool would spend the pool on measuring noise."""
-    from epago.validator.service import CALIBRATION_EVERY_TICKS
-
     h = _sealed_release_harness(tmp_path)
     releases: list[str] = []
 
@@ -2029,7 +2218,9 @@ def test_calibration_under_a_sealed_release_draws_from_the_generator(tmp_path):
     h.service.deps.generate_tasks = generator
     h.service.deps.run_calibration_duel = lambda *a, **k: 0.005
     h.service.tick()  # the genesis king is in place
-    h.service.state.tick_count = CALIBRATION_EVERY_TICKS
+    h.service.state.last_calibration_block = (
+        h.chain.current_block() - constants.CALIBRATION_INTERVAL_BLOCKS
+    )
 
     h.service._maybe_calibrate(h.chain.current_block())
 
@@ -2092,8 +2283,18 @@ def test_a_staged_round_publishes_the_papers_its_tasks_rest_on(tmp_path):
     assert missing not in evidence
 
 
-def test_a_round_is_not_published_before_its_delay_elapses(tmp_path):
-    """Releasing immediately would hand the next challenger a live answer key."""
+def test_a_round_publishes_its_tasks_when_it_ends(tmp_path):
+    """Its tasks are retired and never asked again, so nothing is held back."""
+    h = _sealed_release_harness(tmp_path)
+    h.service._stage_public_pool_round(2, h.service._public_tasks(seed=5, n=10))
+
+    released = h.service.audit_log.release_due(h.service.deps.clock())
+    assert [p for p in released if "publicpool" in p.name]
+
+
+def test_a_configured_delay_still_holds_a_round_back(tmp_path, monkeypatch):
+    """A validator that sets EPAGO_AUDIT_PUBLISH_DELAY_BLOCKS keeps the wait."""
+    monkeypatch.setattr(constants, "AUDIT_PUBLISH_DELAY_BLOCKS", 50_400)
     h = _sealed_release_harness(tmp_path)
     h.service._stage_public_pool_round(2, h.service._public_tasks(seed=5, n=10))
 

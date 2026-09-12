@@ -21,10 +21,12 @@ deterministic degradation (bootstrap quorum mode, burn-all Phase A weights).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -89,9 +91,6 @@ logger = logging.getLogger(__name__)
 
 #: Nominal 12-second blocks.
 BLOCKS_PER_HOUR = 300
-
-#: Calibration duel cadence, in ticks (king-vs-king on fresh tasks -> noise sample).
-CALIBRATION_EVERY_TICKS = 50
 
 
 class PrivatePoolLike(Protocol):
@@ -191,7 +190,7 @@ def compute_sla_report(records: list[dict]) -> dict:
 
 
 class ValidatorService:
-    def __init__(self, deps: Deps) -> None:
+    def __init__(self, deps: Deps, *, background_rounds: bool = False) -> None:
         self.deps = deps
         self.chain = deps.chain
         self.cfg = deps.cfg
@@ -214,6 +213,27 @@ class ValidatorService:
         self._active_window_blocks = (
             self.cfg.quorum.active_window_duels * constants.SLA_TARGET_HOURS * BLOCKS_PER_HOUR
         )
+        # A round can take hours, a calibration run over an hour. With
+        # ``background_rounds`` each runs on its own thread, one at a time since
+        # they share the eval GPUs, and the loop keeps taking submissions,
+        # refreshing the mailbox and saving state meanwhile. One lock guards the
+        # state: the loop holds it for a whole tick, a job only between its long
+        # calls (downloads, GPU sweeps). Tests drive both inline, inside the tick.
+        self.background_rounds = background_rounds
+        self._state_lock = threading.Lock()
+        self._job_thread: threading.Thread | None = None
+        self._job_unlocked = False
+        if self.state.round_in_progress is not None:
+            # The process stopped mid-round. Entrants it had not settled are
+            # still queued; the next request runs them.
+            interrupted = self.state.round_in_progress.get("round")
+            logger.warning("round %s was cut short by a restart; send a new request to run it", interrupted)
+            self.state.last_error = {
+                "code": "round_interrupted",
+                "detail": f"round {interrupted} did not finish",
+                "block": self._safe_block(),
+            }
+            self.state.round_in_progress = None
 
     # ------------------------------------------------------------------ loop
 
@@ -236,16 +256,87 @@ class ValidatorService:
                     logger.exception("state save failed after tick failure")
             await asyncio.sleep(poll_interval_s)
 
+    def _job_running(self) -> bool:
+        """True while a background round or calibration run is going."""
+        return self._job_thread is not None and self._job_thread.is_alive()
+
+    def _start_job(self, name: str, target, *args) -> None:
+        self._job_thread = threading.Thread(target=target, args=args, name=name, daemon=True)
+        self._job_thread.start()
+
+    def _open_round(self, start: RoundStart) -> None:
+        """Run the round inline, or hand it to its own thread."""
+        if not self.background_rounds:
+            self._run_round(start)
+            return
+        self._start_job(f"epago-round-{start.round}", self._round_worker, start)
+
+    def _round_worker(self, start: RoundStart) -> None:
+        """One round on its own thread. It waits for the tick that started it
+        to release the state lock, and holds the lock except around long calls."""
+        with self._state_lock:
+            try:
+                self._run_round(start)
+            except Exception as exc:  # a round never takes the loop down
+                logger.exception("round %d failed", start.round)
+                self.state.last_error = {
+                    "code": "round_failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                    "block": self._safe_block(),
+                }
+            finally:
+                self.state.round_in_progress = None
+                try:
+                    self.state.save()
+                except OSError:
+                    logger.exception("state save failed after round %d", start.round)
+
+    def _calibration_worker(self, block: int) -> None:
+        """One calibration run on its own thread, locked the way a round is."""
+        with self._state_lock:
+            try:
+                self._calibrate(block)
+            finally:
+                try:
+                    self.state.save()
+                except OSError:
+                    logger.exception("state save failed after calibration")
+
+    @contextlib.contextmanager
+    def _lock_released(self):
+        """Free the state lock while a background job waits on a long call.
+
+        Only the job thread ever gives the lock up, and only around work that
+        touches no state: a download, a probe run, a GPU sweep. Anywhere else --
+        the loop, or a job run inline -- this does nothing.
+        """
+        if threading.current_thread() is not self._job_thread or self._job_unlocked:
+            yield
+            return
+        self._job_unlocked = True
+        self._state_lock.release()
+        try:
+            yield
+        finally:
+            self._state_lock.acquire()
+            self._job_unlocked = False
+
     def tick(self) -> None:
         """One full synchronous pass. This is what tests drive."""
+        with self._state_lock:
+            self._tick()
+
+    def _tick(self) -> None:
         block = self.deps.clock()
         if self.state.genesis_block == 0:
             self.state.genesis_block = block
         self._ensure_genesis_king(block)
         # Before anything reads the king: an auditing validator takes the throne
         # from the authority's on-chain pointer, so intake compares challenges
-        # against the king the subnet actually has.
-        self._sync_king_from_pointer()
+        # against the king the subnet actually has. Not while a job runs: a
+        # round's field is scored against the king it opened with.
+        if not self._job_running():
+            self._sync_king_from_pointer()
 
         # Re-commit anything a prior tick could not land (commitment rate
         # limit). Do this first and alone so it wins this window's write budget.
@@ -271,10 +362,12 @@ class ValidatorService:
         # Competitions only run when the round authority triggers one. With no
         # trigger the queue keeps filling and nothing is evaluated — a
         # deliberate liveness dependency on a privileged key.
-        pending = self._pending_round()
+        # A request that lands while a round or calibration run is going stays
+        # pending and opens a round once it ends.
+        pending = None if self._job_running() else self._pending_round()
         if pending is not None:
             if self._ensure_pool_committed(block):
-                self._run_round(pending)
+                self._open_round(pending)
             elif self._round_trigger is not None and not pending.authority_hotkey:
                 # The API latch was consumed to mint this round, but the private
                 # pool's ``ep1`` is not on chain yet (the commitment pallet
@@ -288,13 +381,22 @@ class ValidatorService:
                     pending.round,
                 )
                 self._round_trigger.request()
-        self._derive_coronations(self.deps.clock())
+        # A round in flight fixes the throne, the private pool and the GPUs for
+        # its whole run: coronation, rotation, calibration and the anchor wait
+        # for it to end, and the anchor waits for a calibration run too.
+        # Intake, the mailbox and weights keep going.
+        busy = self._job_running()
+        if not busy:
+            self._derive_coronations(self.deps.clock())
         self._retry_mirror()
-        self._rotate_private_pool(self.deps.clock())
+        if not busy:
+            self._rotate_private_pool(self.deps.clock())
         self._maybe_publish_mailbox(self.deps.clock())
         self._publish_pool_manifest()
-        self._maybe_calibrate(self.deps.clock())
-        self._maybe_anchor(self.deps.clock())
+        if not busy:
+            self._maybe_calibrate(self.deps.clock())
+        if not self._job_running():
+            self._maybe_anchor(self.deps.clock())
         try:
             self.maybe_set_weights()
         except Exception as exc:  # noqa: BLE001 - periodic emission set; never abort the tick
@@ -410,13 +512,14 @@ class ValidatorService:
     # ------------------------------------------------------------- the duel
 
     def _materialize(self, ref: ModelRef) -> Path:
-        if self.deps.materialize is not None:
-            return Path(self.deps.materialize(ref, self.deps.cache_dir))
-        from epago.model.store import materialize_model  # heavy deps stay late-bound
+        with self._lock_released():  # a checkpoint download can take a while
+            if self.deps.materialize is not None:
+                return Path(self.deps.materialize(ref, self.deps.cache_dir))
+            from epago.model.store import materialize_model  # heavy deps stay late-bound
 
-        return materialize_model(
-            ref, self.deps.cache_dir, fallbacks=self._public_fallbacks(ref)
-        )
+            return materialize_model(
+                ref, self.deps.cache_dir, fallbacks=self._public_fallbacks(ref)
+            )
 
     @staticmethod
     def _public_fallbacks(ref: ModelRef) -> tuple[ModelRef, ...]:
@@ -495,8 +598,8 @@ class ValidatorService:
         2. the **on-chain authority hotkey**, whose ``er1`` every validator can
            see and time-check independently.
 
-        The minimum interval is enforced for both, so neither can run rounds
-        back to back.
+        A minimum interval, when one is set, is enforced for both. By default
+        there is none: each request opens a round, and the owner paces them.
         """
         if self._round_trigger is not None and self._round_trigger.take():
             block = self._safe_block()
@@ -580,6 +683,23 @@ class ValidatorService:
             self.state.last_round_block = start.block
             return
 
+        self.state.round_in_progress = {
+            "round": start.round,
+            "block": start.block,
+            "entrants": [
+                {"digest": q.digest, "author_hotkey": q.author_hotkey, "repo": q.repo}
+                for q in field
+            ],
+        }
+        self.state.save()
+        try:
+            self._run_field(start, field, block)
+        finally:
+            self.state.round_in_progress = None
+
+    def _run_field(self, start: RoundStart, field: list[QueuedSubmission], block: int) -> None:
+        """Gate, duel and settle one round's field, then stage its record."""
+        assert self.state.king is not None
         try:
             king_dir = self._materialize(self.state.king.ref)
         except Exception as exc:  # noqa: BLE001 - retry the whole round next tick
@@ -744,7 +864,9 @@ class ValidatorService:
                     "; ".join(f"{f.code}: {f.detail}" for f in failures),
                 )
                 continue
-            if exact_copy_of_king(challenger_dir, king_dir):
+            with self._lock_released():
+                copied = exact_copy_of_king(challenger_dir, king_dir)
+            if copied:
                 resolve(
                     SubmissionStatus.FAILED_INTAKE,
                     "exact_copy",
@@ -752,7 +874,8 @@ class ValidatorService:
                 )
                 continue
 
-            probe_failures = list(self.deps.run_probes(challenger_dir, king_dir))
+            with self._lock_released():
+                probe_failures = list(self.deps.run_probes(challenger_dir, king_dir))
             if probe_failures:
                 resolve(
                     SubmissionStatus.FAILED_PROBES,
@@ -762,7 +885,8 @@ class ValidatorService:
                 )
                 continue
 
-            fingerprint = weight_fingerprint(challenger_dir)
+            with self._lock_released():
+                fingerprint = weight_fingerprint(challenger_dir)
             owner = claimed.get(fingerprint)
             if owner is not None:
                 resolve(
@@ -802,6 +926,11 @@ class ValidatorService:
         return entrants, admitted
 
     def _run_round_duel(self, spec: RoundDuelSpec) -> list[RoundResult]:
+        """Score a field on its exam, with the state lock free for the loop."""
+        with self._lock_released():
+            return self._sweep_field(spec)
+
+    def _sweep_field(self, spec: RoundDuelSpec) -> list[RoundResult]:
         """Delegate to the batch runner, or fall back to per-entrant duels.
 
         The fallback exists so a Deps built with only ``run_duel`` (tests,
@@ -1044,9 +1173,9 @@ class ValidatorService:
             "delta": outcome.delta,
             "round": start.round,
             # The coronation window runs from the round, not from the reveal.
-            # Submissions wait for the next competition, and with a ~2-day
-            # cadence and a ~24h timeout every one of them would lapse before
-            # its round ever opened.
+            # Submissions wait for the next competition, and with rounds about
+            # a day apart and a ~24h timeout many of them would lapse before
+            # their round ever opened.
             "round_block": start.block,
         }
 
@@ -1658,36 +1787,58 @@ class ValidatorService:
         self.state.last_pool_publish_block = block
 
     def _maybe_calibrate(self, block: int) -> None:
-        """Every N ticks: king-vs-king on fresh tasks. Any nonzero disagreement
-        is pure harness noise and feeds the adaptive-delta noise floor."""
-        if self.state.tick_count == 0 or self.state.tick_count % CALIBRATION_EVERY_TICKS != 0:
+        """Once every ``CALIBRATION_INTERVAL_BLOCKS``: king-vs-king on fresh
+        tasks, inline or on its own thread like a round."""
+        last = self.state.last_calibration_block
+        if last is None:
+            # The first run waits one interval. Until then the cold-start floor
+            # applies, which errs high, and the first round is not held up.
+            self.state.last_calibration_block = block
             return
+        if block - last < constants.CALIBRATION_INTERVAL_BLOCKS:
+            return
+        # Marked when it starts: a failed run waits for the next interval
+        # rather than retrying, and taking the GPUs, every tick.
+        self.state.last_calibration_block = block
+        if self.background_rounds:
+            self._start_job(f"epago-calibration-{block}", self._calibration_worker, block)
+        else:
+            self._calibrate(block)
+
+    def _calibrate(self, block: int) -> None:
+        """King-vs-king on fresh tasks. Any nonzero disagreement is pure harness
+        noise and feeds the adaptive-delta noise floor."""
         assert self.state.king is not None
         try:
             king_dir = self._materialize(self.state.king.ref)
             seed = derive_seed(self.chain.block_hash(block), self.deps.wallet_hotkey, b"calibration")
-            # Calibration generates rather than draws: a sealed release names no
-            # templates, and a recurring noise measurement would drain the pool.
-            tasks = self.deps.generate_tasks(
-                seed=seed,
-                release=self.cfg.eval.generation_release,
-                corpus=self.deps.corpus,
-                n=constants.N_PUB_TASKS,
-                king_probe=None,
-            )
-            # The judge rides along: it is part of the graded path a real duel
-            # takes, so excluding it would measure a noise floor the duel does
-            # not actually run at.
-            rate = float(
-                self.deps.run_calibration_duel(
-                    king_dir,
-                    tasks,
-                    self.deps.env,
-                    self.deps.backend_factory,
-                    self.deps.llm_judge,
+            with self._lock_released():
+                # Calibration generates rather than draws: a sealed release names
+                # no templates, and a recurring noise measurement would drain the
+                # pool.
+                tasks = self.deps.generate_tasks(
+                    seed=seed,
+                    release=self.cfg.eval.generation_release,
+                    corpus=self.deps.corpus,
+                    n=constants.CALIBRATION_TASKS,
+                    king_probe=None,
                 )
-            )
-            self.state.add_noise_sample(rate)
+                # The judge rides along: it is part of the graded path a real
+                # duel takes, so excluding it would measure a noise floor the
+                # duel does not actually run at.
+                rate = float(
+                    self.deps.run_calibration_duel(
+                        king_dir,
+                        tasks,
+                        self.deps.env,
+                        self.deps.backend_factory,
+                        self.deps.llm_judge,
+                    )
+                )
+            # The run returns the score-gap standard error at its own size, and
+            # that falls as 1/sqrt(n). Rescaled to the public exam it is the
+            # quantity a duel's delta is clamped by, measured on fewer tasks.
+            self.state.add_noise_sample(rate * (len(tasks) / constants.N_PUB_TASKS) ** 0.5)
         except Exception as exc:  # noqa: BLE001 - calibration is opportunistic
             self.state.last_error = {
                 "code": "calibration_failed",

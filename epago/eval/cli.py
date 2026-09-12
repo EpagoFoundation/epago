@@ -17,6 +17,30 @@ import typer
 app = typer.Typer(no_args_is_help=True, help="Persistent eval server tooling.")
 
 
+def probe_task_pool(cfg, corpus) -> list:
+    """The pool the format probe draws from, minted by the generator release.
+
+    Never ``taskgen_release``: under a sealed contract that names a pool file
+    (``POOL1``), not a generator, so minting from it raised and every probe
+    call failed. The validator's own probe pool uses the same release.
+    """
+    from epago import constants
+    from epago.core.stats import derive_seed
+    from epago.taskgen.generator import generate_tasks
+    from epago.validator.wiring import PROBE_TASK_SEED_LABEL
+
+    # A pool, not the probe set: probes.probe_task_set picks the low-hop,
+    # template-balanced FORMAT_PROBE_TASKS out of it.
+    seed = derive_seed(cfg.eval.corpus_digest, cfg.chain.name, PROBE_TASK_SEED_LABEL)
+    return generate_tasks(
+        seed=seed,
+        release=cfg.eval.generation_release,
+        corpus=corpus,
+        n=constants.FORMAT_PROBE_POOL_TASKS,
+        king_probe=None,
+    )
+
+
 @app.command("serve")
 def serve(
     corpus: Path = typer.Option(..., help="Pinned corpus snapshot (sqlite)."),
@@ -35,9 +59,7 @@ def serve(
     """
     import uvicorn
 
-    from epago import constants
     from epago.config import load_config
-    from epago.core.stats import derive_seed
     from epago.environment.corpus import SqliteCorpus
     from epago.environment.services import ResearchEnvironment
     from epago.eval.backend import backend_factory as make_backend
@@ -45,7 +67,6 @@ def serve(
     from epago.eval.pool import place_engines
     from epago.eval.probes import make_probe_runner
     from epago.eval.server import create_app
-    from epago.validator.wiring import PROBE_TASK_SEED_LABEL
 
     cfg = load_config()
     corpus_store = SqliteCorpus(corpus)
@@ -55,18 +76,7 @@ def serve(
         return make_backend(model_dir, kind=backend)
 
     def probe_tasks_fn():
-        from epago.taskgen.generator import generate_tasks
-
-        # A pool, not the probe set: probes.probe_task_set picks the
-        # low-hop, template-balanced FORMAT_PROBE_TASKS out of it.
-        seed = derive_seed(cfg.eval.corpus_digest, cfg.chain.name, PROBE_TASK_SEED_LABEL)
-        return generate_tasks(
-            seed=seed,
-            release=cfg.eval.taskgen_release,
-            corpus=corpus_store,
-            n=constants.FORMAT_PROBE_POOL_TASKS,
-            king_probe=None,
-        )
+        return probe_task_pool(cfg, corpus_store)
 
     # Multi-GPU: one whole model replica per card, sweeps sharded across them.
     # ``None`` on a single-GPU box (and for the scripted backend, which has no

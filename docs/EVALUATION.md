@@ -686,7 +686,7 @@ artifacts:
 |---|---|---|---|
 | **pool** | every task with answers | when the pool retires | `public_pool_digest` |
 | **manifest** | task ids only | immediately | `public_pool_manifest_digest` |
-| **round file** | the tasks one round asked, with the papers they rest on | after the embargo | `public_task_ids_digest` |
+| **round file** | the tasks one round asked, with the papers they rest on | when the round ends | `public_task_ids_digest` |
 
 Both digests are fixed in the contract **before** any round opens, so the exam
 provably existed before any challenger's weights were frozen, and neither artifact
@@ -982,10 +982,10 @@ At that moment every past private verdict becomes retroactively and
 cryptographically checkable. A verdict that could not have come from the committed
 pool is provable, permanently.
 
-The same discipline applies to public tasks under a sealed release: the round's
-questions publish after the embargo, and the embargo is **enforced by path** —
-`audit/delayed/` is simply not in the sync list, so a task under its delay cannot
-leak through a misconfiguration.
+Public tasks under a sealed release need no wait: a round's questions are retired
+when it ends, never asked again, so they publish with its results. Anything staged
+is still **held back by path** — `audit/delayed/` is simply not in the sync list —
+so a validator that sets a delay cannot leak a task through a misconfiguration.
 
 A pool is secret exactly while it can influence verdicts, and public the moment it
 cannot.
@@ -1103,13 +1103,14 @@ Two stores, split by who writes them.
 | crowned models | `kings/<digest>/` | anyone |
 | credential mailbox | `mailbox/credentials.json` | anyone; each opens one entry |
 | verdict records | `audit/audit.jsonl` | anyone |
-| tasks + transcripts under embargo | `audit/delayed/` | **nobody — never uploaded** |
-| tasks + transcripts after embargo | `audit/published/` | anyone |
+| tasks + transcripts staged, not yet released | `audit/delayed/` | **nobody — never uploaded** |
+| tasks + transcripts, released when the round ends | `audit/published/` | anyone |
 | private pools at rotation, round files | `publications/` | anyone |
 | dashboard | `dashboard/` | anyone |
+| a list of every published file | `index.json` | anyone |
 
-**The embargo is enforced by path, not by a flag.** `audit/delayed/` is simply not
-in the sync list, so a task under its transparency delay cannot leak through a
+**Held-back files stay back by path, not by a flag.** `audit/delayed/` is simply not
+in the sync list, so a task staged with a delay cannot leak through a
 misconfiguration.
 
 **Objects are never deleted.** A retired pool or an old audit bundle stays where it
@@ -1180,8 +1181,8 @@ loop.
 | `MAX_CHALLENGER_SIZE_RATIO` | 1.05 | size cap vs king |
 | `FORMAT_PROBE_MIN_COMPLIANCE` | 0.55 | intake probe bar over 20 tasks |
 | `PRIVATE_POOL_ROTATION_BLOCKS` | 43,200 | ~6 days; pool publishes at rotation |
-| `AUDIT_PUBLISH_DELAY_BLOCKS` | 50,400 | ~7 days; public task disclosure delay |
-| `ROUND_MIN_INTERVAL_BLOCKS` | 14,400 | ~2 days between rounds |
+| `AUDIT_PUBLISH_DELAY_BLOCKS` | 0 | a round's tasks publish when it ends |
+| `ROUND_MIN_INTERVAL_BLOCKS` | 0 | no minimum gap; the owner paces rounds (target: one a day) |
 | `ROUND_MAX_ENTRANTS` | 32 | field size per round |
 | `NEAR_MISS_RETRIES` | 1 | free retry on a fresh exam |
 | `SLA_TARGET_HOURS` | 48 | verdict service target |

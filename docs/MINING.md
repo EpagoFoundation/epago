@@ -76,7 +76,7 @@ The minter's last stage phrases each question with a model through OpenRouter
 library: `epago eval serve --corpus practice-v1/corpus.db` serves the same search-and-read
 harness a duel runs.
 
-**Real exam questions** follow every round: once its embargo ends, the round's file is
+**Real exam questions** follow every round: when it ends, the round's file is
 published with its tasks and the papers they cite. Those tasks are retired — no later
 round asks them again — so they are study material, not an answer key.
 
@@ -107,7 +107,7 @@ flowchart TD
 | 4 | **Preflight** | `epago miner preflight <challenger_dir> <king_dir> --repo <repo> --hotkey <ss58>` runs the exact checks a validator runs at intake — repo pattern, hotkey prefix, file hygiene, config lock, size cap, exact-copy check — with the same machine-readable failure codes. A submission that fails preflight will fail intake; there is no validator-side leniency. |
 | 5 | **Upload** | Upload privately into the validator's bucket with `epago miner auth` and `epago miner upload` (see [Where your model lives](#where-your-model-lives)). Your model reference is the printed `sha256:` digest — an immutable, content-addressed pin. Where a contract also takes public submissions you may instead push to a Hugging Face repo and pin `hf:<revision>`; mainnet does not. |
 | 6 | **Reveal** | `epago miner submit --repo <repo> --digest <digest> --king-digest <king_digest>` commits the payload `e2\|<king_digest>\|<your_repo>\|<your_digest>` through the timelock commit-reveal extrinsic. Your hotkey is not in the payload — the chain records who signed, and that is your authorship. It auto-reveals 5 blocks later, chain-stamped with its reveal block. Only your latest reveal counts; revealing again supersedes the previous one. |
-| 7 | **Wait for a round** | Submissions queue. Every ~2 days the round authority opens a competition; your challenge enters the first round whose trigger lands *after* your reveal. |
+| 7 | **Wait for a round** | Submissions queue. Each round takes every submission revealed before it opens, so yours enters the first round that opens *after* your reveal. We aim to open one round a day and are adding evaluation GPUs to keep that pace, but it is a goal, not a fixed schedule: the next round opens once the previous field has been scored. |
 | 8 | **Duel** | The whole field answers one exam against the king; each validator runs intake, probes, then the paired duel (800 public + 200 private tasks). The provisional winner is re-dueled once on a fresh exam and must clear the floor **twice** before its ACCEPT is committed (an unconfirmed win settles as a near-miss — the re-duel right stays intact). Each validator commits an `ev3` verdict per entrant; only the confirmed best entrant gets an ACCEPT. |
 | 9 | **Coronation** | When ACCEPT verdicts cover ≥ 51% of active-evaluator stake, you are crowned at the crossing block. Emissions start flowing to your hotkey per the reign schedule, with a coronation bonus proportional to your measured improvement. |
 

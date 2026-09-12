@@ -16,9 +16,11 @@ class FakeS3:
 
     def __init__(self) -> None:
         self.objs: dict[tuple[str, str], bytes] = {}
+        self.types: dict[tuple[str, str], str | None] = {}
 
-    def upload_file(self, filename, bucket, key):
+    def upload_file(self, filename, bucket, key, ExtraArgs=None):
         self.objs[(bucket, key)] = Path(filename).read_bytes()
+        self.types[(bucket, key)] = (ExtraArgs or {}).get("ContentType")
 
     def download_file(self, bucket, key, filename):
         Path(filename).write_bytes(self.objs[(bucket, key)])
@@ -35,6 +37,19 @@ class FakeS3:
     def put_raw(self, bucket, key, body=b"pwned"):
         """Plant an object under an arbitrary key, as any bucket writer can."""
         self.objs[(bucket, key)] = body
+
+
+def test_an_uploaded_file_keeps_its_type(tmp_path):
+    """R2 serves the stored type back: a page stored without one downloads
+    instead of opening in the browser."""
+    s3 = FakeS3()
+    store = ObjectStore(bucket="b", client=s3)
+    for name in ("index.html", "dashboard.json", "model.safetensors"):
+        (tmp_path / name).write_text("x")
+        store.put_object(f"d/{name}", tmp_path / name)
+    assert s3.types[("b", "d/index.html")] == "text/html"
+    assert s3.types[("b", "d/dashboard.json")] == "application/json"
+    assert s3.types[("b", "d/model.safetensors")] is None
 
 
 def _model_dir(tmp_path: Path) -> Path:

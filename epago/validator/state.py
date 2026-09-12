@@ -130,6 +130,10 @@ class ValidatorState:
         self.pending_verdicts: list[str] = []
         self.pending_king_pointer: str | None = None          # ek1 awaiting a re-commit
         self.current_round: int = 0
+        # The round being evaluated right now, or None: ``{round, block,
+        # entrants: [{digest, author_hotkey, repo}]}``. Saved while the round
+        # runs so the dashboard can say a round is on, and who is in it.
+        self.round_in_progress: dict[str, Any] | None = None
         self.last_round_run: int = 0
         self.last_round_block: int = 0
         self.sla: list[dict[str, Any]] = []
@@ -148,6 +152,7 @@ class ValidatorState:
         self.served_public_task_ids: list[str] = []
         self.anchor_history: list[dict[str, Any]] = []    # external-anchor runs (observational)
         self.last_anchor_block: int = 0
+        self.last_calibration_block: int | None = None
         self.tick_count: int = 0
         self.pending_mirror: bool = False
         self.last_error: dict[str, Any] | None = None
@@ -194,6 +199,7 @@ class ValidatorState:
         state.pending_verdicts = list(pending)
         state.pending_king_pointer = data.get("pending_king_pointer")
         state.current_round = int(data.get("current_round", 0))
+        state.round_in_progress = data.get("round_in_progress")
         state.last_round_run = int(data.get("last_round_run", 0))
         state.last_round_block = int(data.get("last_round_block", 0))
         state.sla = list(data.get("sla", []))
@@ -207,6 +213,8 @@ class ValidatorState:
         state.committed_pool_epoch = int(data.get("committed_pool_epoch", -1))
         state.anchor_history = list(data.get("anchor_history", []))
         state.last_anchor_block = int(data.get("last_anchor_block", 0))
+        lcb = data.get("last_calibration_block")
+        state.last_calibration_block = int(lcb) if lcb is not None else None
         state.tick_count = int(data.get("tick_count", 0))
         state.pending_mirror = bool(data.get("pending_mirror", False))
         state.last_error = data.get("last_error")
@@ -242,6 +250,7 @@ class ValidatorState:
             "pending_verdicts": self.pending_verdicts,
             "pending_king_pointer": self.pending_king_pointer,
             "current_round": self.current_round,
+            "round_in_progress": self.round_in_progress,
             "last_round_run": self.last_round_run,
             "last_round_block": self.last_round_block,
             "sla": self.sla,
@@ -254,6 +263,7 @@ class ValidatorState:
             "committed_pool_epoch": self.committed_pool_epoch,
             "anchor_history": self.anchor_history,
             "last_anchor_block": self.last_anchor_block,
+            "last_calibration_block": self.last_calibration_block,
             "tick_count": self.tick_count,
             "pending_mirror": self.pending_mirror,
             "last_error": self.last_error,
