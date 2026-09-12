@@ -52,8 +52,8 @@ round_authority_hotkey = ""
 # questions from that block's hash, so the questions do not exist until a block
 # nobody picked is already sealed. A trigger cannot leak an exam.
 #
-# ROUND_MIN_INTERVAL_BLOCKS (~2 days) is enforced by the tick loop regardless,
-# so a flood of requests collapses to one round when the interval allows.
+# Each request opens one round; the owner paces them (target: one a day), and a
+# burst of requests collapses to one round.
 round_api_bind = "127.0.0.1:8919"
 # Where unallocatable emission goes: the subnet owner hotkey for netuid 36,
 # read from the chain (SubnetOwnerHotkey[36]) rather than transcribed. Empty

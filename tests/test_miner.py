@@ -91,6 +91,74 @@ def test_preflight_catches_bad_repo_name(challenger_dir, king_dir, cfg):
     assert any(p.startswith("hotkey_prefix") for p in problems)
 
 
+def test_preflight_takes_a_private_upload_under_its_own_prefix(challenger_dir, king_dir, cfg):
+    """Intake does not apply the public repo-name rule to a private upload, so
+    neither does preflight: the upload's folder is the ownership check."""
+    repo = f"submissions/{AUTHOR_HK}/run1"
+    assert workflow.preflight(challenger_dir, king_dir, repo, AUTHOR_HK, cfg) == []
+
+
+def test_preflight_catches_a_private_upload_in_another_miners_folder(challenger_dir, king_dir, cfg):
+    repo = f"submissions/{HOTKEY}/run1"
+    problems = workflow.preflight(challenger_dir, king_dir, repo, AUTHOR_HK, cfg)
+    assert any(p.startswith("wrong_prefix") for p in problems)
+
+
+def test_auth_fetches_the_mailbox_with_its_own_user_agent(tmp_path, monkeypatch):
+    """The public bucket refuses Python's default user agent with a 403."""
+    import urllib.request
+
+    from epago.miner.cli import app
+
+    seen = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen["ua"] = request.get_header("User-agent")
+        raise OSError("stop here")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = CliRunner().invoke(app, [
+        "auth", "--mailbox", "https://example.invalid/credentials.json",
+        "--wallet-name", "w", "--wallet-hotkey", "h", "--out", str(tmp_path / "auth.json"),
+    ])
+    assert result.exit_code == 1
+    assert seen["ua"] == "epago-miner"
+
+
+def test_auth_reads_an_ed25519_seed_from_the_hotkey_file(tmp_path, monkeypatch):
+    """bittensor-wallet 4 keypairs expose no private key; the seed is in the file."""
+    from types import SimpleNamespace
+
+    bittensor_wallet = pytest.importorskip("bittensor_wallet")
+    from nacl.signing import SigningKey
+
+    from epago.miner.cli import _load_hotkey_seed
+
+    signing = SigningKey.generate()
+    keyfile = tmp_path / "hotkey"
+    keyfile.write_text(json.dumps({"secretSeed": "0x" + bytes(signing).hex()}))
+
+    class FakeWallet:
+        def __init__(self, name, hotkey):
+            self.hotkey = SimpleNamespace(public_key=bytes(signing.verify_key))
+            self.hotkey_file = SimpleNamespace(path=str(keyfile))
+
+    monkeypatch.setattr(bittensor_wallet, "Wallet", FakeWallet)
+    assert _load_hotkey_seed("w", "h") == bytes(signing)
+
+    # An sr25519 hotkey's file also holds 32 bytes, but they do not make its key.
+    class Sr25519Wallet(FakeWallet):
+        def __init__(self, name, hotkey):
+            super().__init__(name, hotkey)
+            self.hotkey = SimpleNamespace(public_key=b"\x01" * 32)
+
+    import typer
+
+    monkeypatch.setattr(bittensor_wallet, "Wallet", Sr25519Wallet)
+    with pytest.raises(typer.Exit):
+        _load_hotkey_seed("w", "h")
+
+
 def test_preflight_catches_config_lock_violation(tmp_path, king_dir, cfg):
     hacked = make_model_dir(
         tmp_path / "hacked",

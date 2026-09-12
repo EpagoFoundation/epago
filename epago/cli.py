@@ -224,7 +224,9 @@ def validator_run(
         ingest_dir=ingest_dir,
         sign=_sign,
     )
-    service = ValidatorService(deps)
+    # Rounds run beside the loop, so intake, the mailbox and the saved state keep
+    # moving while a round is scored.
+    service = ValidatorService(deps, background_rounds=True)
     console.print(f"[green]epago validator[/green] netuid={netuid} network={network}")
     asyncio.run(service.run_forever(poll_interval_s=poll_interval_s))
 

@@ -165,10 +165,22 @@ def preflight(
     probe additionally runs when :mod:`epago.eval` is importable (optional —
     it needs the eval extra installed).
     """
+    from epago.chain.mailbox import submission_prefix
+    from epago.model.objectstore import SUBMISSIONS_PREFIX
+
     problems: list[str] = []
-    failure = validate_repo_name(repo, hotkey, cfg)
-    if failure is not None:
-        problems.append(f"{failure.code}: {failure.detail}")
+    if repo.startswith(SUBMISSIONS_PREFIX):
+        # A private upload: as at intake, its folder is the ownership check and
+        # the repo-name pattern (a public-repo rule) does not apply.
+        expected = submission_prefix(hotkey)
+        if not repo.startswith(expected):
+            problems.append(
+                f"wrong_prefix: a private submission from {hotkey} must live under {expected}"
+            )
+    else:
+        failure = validate_repo_name(repo, hotkey, cfg)
+        if failure is not None:
+            problems.append(f"{failure.code}: {failure.detail}")
     for f in validate_challenger_folder(Path(challenger_dir), Path(king_dir), cfg):
         problems.append(f"{f.code}: {f.detail}")
     if exact_copy_of_king(Path(challenger_dir), Path(king_dir)):

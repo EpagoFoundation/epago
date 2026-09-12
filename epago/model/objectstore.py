@@ -29,6 +29,7 @@ or credentials.
 
 from __future__ import annotations
 
+import mimetypes
 import os
 from pathlib import Path, PurePosixPath
 
@@ -153,8 +154,15 @@ class ObjectStore:
     # ---- generic object ops (the shared-bucket primitives) -------------------
 
     def put_object(self, key: str, path: Path) -> None:
-        """Upload a single local file to ``key`` in the bucket."""
-        self.client().upload_file(str(path), self.require_bucket(), key)
+        """Upload a single local file to ``key`` in the bucket.
+
+        The file's type travels with it. R2 serves back the stored
+        Content-Type, and with none a browser downloads the published
+        dashboard's ``index.html`` instead of showing it.
+        """
+        kind, _ = mimetypes.guess_type(str(path))
+        extra = {"ExtraArgs": {"ContentType": kind}} if kind else {}
+        self.client().upload_file(str(path), self.require_bucket(), key, **extra)
 
     def get_object(self, key: str, dest: Path) -> None:
         """Download the object at ``key`` into ``dest`` (parents created)."""

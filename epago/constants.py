@@ -32,7 +32,7 @@ def _env(name: str, default):
 # standard error is 0.034, so the 99.9% LCB alone demands a 10.6pp win while
 # delta contributes 1.05pp -- the crown was priced by noise, not by the effect
 # floor. Standard error falls as 1/sqrt(N), so quadrupling the public half cuts
-# the bar to roughly 6pp. A 32-entrant round still fits the ~48h interval, and
+# the bar to roughly 6pp. A 32-entrant round still fits the 48h SLA target, and
 # fits comfortably once a validator scores on more than one GPU.
 N_PUB_TASKS: int = _env("N_PUB_TASKS", 800)
 N_PRIV_TASKS: int = _env("N_PRIV_TASKS", 200)
@@ -181,10 +181,11 @@ KING_POINTER_VERSION: str = "ek1"
 STATUS_VERSION: str = "es1"
 
 # --- competition rounds -------------------------------------------------------
-#: Minimum blocks between two round starts (~2 days at 12s blocks). A trigger
-#: that arrives sooner is refused, so the cadence is a property of the chain
-#: rather than of how often the owner happens to run the command.
-ROUND_MIN_INTERVAL_BLOCKS: int = _env("ROUND_MIN_INTERVAL_BLOCKS", 14_400)
+#: Minimum blocks between two round starts. 0 by default: each trigger opens a
+#: round and the owner paces them, aiming for one a day once the previous field
+#: is scored. A validator can set a floor; a trigger that arrives sooner is then
+#: refused.
+ROUND_MIN_INTERVAL_BLOCKS: int = _env("ROUND_MIN_INTERVAL_BLOCKS", 0)
 #: Upper bound on challengers evaluated in one round. Every entrant costs a full
 #: sweep of the exam, so the field is capped and the overflow waits for the next
 #: round rather than blowing the SLA. Cut entrants are logged, never dropped
@@ -246,7 +247,10 @@ ANCHOR_INTERVAL_BLOCKS: int = _env("ANCHOR_INTERVAL_BLOCKS", 50_400)  # ~7 days
 ANCHOR_DIVERGENCE_ALERT: float = _env("ANCHOR_DIVERGENCE_ALERT", 0.10)
 
 # --- audit -------------------------------------------------------------------
-AUDIT_PUBLISH_DELAY_BLOCKS: int = _env("AUDIT_PUBLISH_DELAY_BLOCKS", 50_400)  # public tasks after ~7 days
+#: Blocks between staging a round's record and tasks and publishing them. 0: a
+#: round's tasks are retired when it ends and never asked again, so they publish
+#: with its results.
+AUDIT_PUBLISH_DELAY_BLOCKS: int = _env("AUDIT_PUBLISH_DELAY_BLOCKS", 0)
 AUDIT_CHAIN_COMMIT_EVERY: int = _env("AUDIT_CHAIN_COMMIT_EVERY", 100)
 # Cold-start floor, used only until this validator has run its own calibration
 # duel. 2/400 assumed two runs of one checkpoint differ on half a percent of
@@ -257,3 +261,9 @@ AUDIT_CHAIN_COMMIT_EVERY: int = _env("AUDIT_CHAIN_COMMIT_EVERY", 100)
 # errs high deliberately. Falls as 1/sqrt(n), so it is conservative at the
 # shipped exam size.
 CROSS_GPU_NOISE_BUDGET: float = _env("CROSS_GPU_NOISE_BUDGET", 0.03)
+# King-vs-king calibration runs the king twice, so its cost grows with the task
+# count. It measures a standard error, which rescales to the exam size, so once
+# a day on a quarter of the public exam's size is enough; the loop keeps taking
+# submissions while it runs.
+CALIBRATION_INTERVAL_BLOCKS: int = _env("CALIBRATION_INTERVAL_BLOCKS", 7_200)  # ~1 day
+CALIBRATION_TASKS: int = _env("CALIBRATION_TASKS", 200)

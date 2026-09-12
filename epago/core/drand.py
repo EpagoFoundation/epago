@@ -154,7 +154,9 @@ class HttpDrand:
         for base in self._endpoints:
             url = f"{base.rstrip('/')}/{self._info.chain_hash}/public/{round_number}"
             try:
-                with urllib.request.urlopen(url, timeout=self._timeout_s) as resp:
+                # Some relays refuse Python's default user agent (HTTP 403).
+                request = urllib.request.Request(url, headers={"User-Agent": "epago"})
+                with urllib.request.urlopen(request, timeout=self._timeout_s) as resp:
                     data = json.loads(resp.read())
                 if int(data["round"]) != round_number:
                     raise ValueError(f"drand returned round {data['round']} != {round_number}")

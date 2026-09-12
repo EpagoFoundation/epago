@@ -13,6 +13,8 @@ from epago import constants
 from epago.config import load_config
 from epago.dashboard.export import (
     DASHBOARD_SCHEMA,
+    REFUSAL_FALLBACK,
+    REFUSAL_REASONS,
     export_dashboard,
     export_from_chain,
     load_dashboard_inputs,
@@ -134,6 +136,7 @@ def test_export_sections_and_schema(state_dir):
     for key in (
         "king", "kpis", "lineage", "accuracy_series", "duels", "miners",
         "funnel", "quorum", "sla", "emissions", "tasks", "noise", "queue",
+        "round_running", "refused", "links",
     ):
         assert key in data
 
@@ -459,3 +462,119 @@ def test_kpis_carry_the_round_counters(tmp_path):
     # Every round-born duel row knows its round; the legacy one reads 0.
     rounds_seen = {d["round"] for d in data["duels"]}
     assert {0, 7, 8} <= rounds_seen
+
+
+# --- round running, refused, links --------------------------------------------
+
+
+def _update_state(state_dir: Path, **changes) -> None:
+    state = json.loads((state_dir / "state.json").read_text())
+    state.update(changes)
+    (state_dir / "state.json").write_text(json.dumps(state))
+
+
+def _digest(c: str) -> str:
+    return "sha256:" + c * 64
+
+
+# What a validator's own detail text can hold; none of it may reach the export.
+_SECRET = "OSError: /root/secret/cache/model.safetensors via https://internal.example/x"
+
+
+def test_round_running_is_null_when_idle_or_absent(state_dir):
+    # The fixture predates the key: an older state file reads as idle.
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert data["round_running"] is None
+    _update_state(state_dir, round_in_progress=None)
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert data["round_running"] is None
+
+
+def test_round_running_carries_round_block_and_entrants(state_dir):
+    entrants = [
+        {"digest": _digest("c"), "author_hotkey": "miner-c", "repo": "submissions/miner-c/x"},
+        {"digest": _digest("d"), "author_hotkey": "miner-d", "repo": "submissions/miner-d/y"},
+    ]
+    _update_state(state_dir, round_in_progress={"round": 9, "block": 1018, "entrants": entrants})
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert data["round_running"] == {"round": 9, "block": 1018, "entrants": entrants}
+
+
+def test_refused_lists_only_submissions_that_never_dueled(state_dir):
+    _update_state(
+        state_dir,
+        statuses={
+            _digest("2"): "accepted",
+            _digest("a"): "near_miss",
+            _digest("b"): "duel_lost",
+            _digest("c"): "failed_intake",
+            _digest("e"): "failed_probes",
+            _digest("f"): "stale_parent",
+            _digest("9"): "queued",
+        },
+        failure_memory={
+            _digest("b"): {"code": "duel_lost", "detail": "lcb_pub=-0.080000", "block": 1012},
+            _digest("c"): {"code": "exact_copy", "detail": _SECRET, "block": 1016},
+            _digest("e"): {"code": "probes", "detail": _SECRET, "block": 1017},
+        },
+        seen_digests={
+            _digest("2"): "miner-a", _digest("a"): "miner-b", _digest("b"): "miner-c",
+            _digest("c"): "miner-e", _digest("e"): "miner-f", _digest("f"): "miner-g",
+            _digest("9"): "miner-h",
+        },
+        intake_log=[
+            {"hotkey": "miner-g", "digest": _digest("f"), "code": "stale_parent", "detail": _SECRET, "block": 1011},
+            # refused once, then admitted: no longer a refusal
+            {"hotkey": "miner-h", "digest": _digest("9"), "code": "cooldown", "detail": _SECRET, "block": 1012},
+            {"hotkey": "miner-h", "digest": _digest("9"), "code": "queued", "detail": "queue_scale=1", "block": 1013},
+            # intake re-reads every reveal, so the same refusal repeats each tick
+            {"hotkey": "miner-i", "digest": _digest("7"), "code": "hotkey_spent", "detail": _SECRET, "block": 1014},
+            {"hotkey": "miner-i", "digest": _digest("7"), "code": "hotkey_spent", "detail": _SECRET, "block": 1015},
+            # the king's digest revealed again by someone else
+            {"hotkey": "miner-j", "digest": _digest("2"), "code": "duplicate_digest", "detail": _SECRET, "block": 1019},
+        ],
+    )
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    rows = data["refused"]
+    # Newest first; the dueled ones (accepted, near miss, lost) are left to the duel table.
+    assert [(r["author_hotkey"], r["code"], r["block"]) for r in rows] == [
+        ("miner-j", "duplicate_digest", 1019),
+        ("miner-f", "probes", 1017),
+        ("miner-e", "exact_copy", 1016),
+        ("miner-i", "hotkey_spent", 1014),
+        ("miner-g", "stale_parent", 1011),
+    ]
+    for r in rows:
+        assert set(r) == {"digest", "author_hotkey", "code", "reason", "block"}
+        assert r["reason"] == REFUSAL_REASONS[r["code"]]
+    # The validator's own detail text never leaves the box.
+    dumped = json.dumps(data)
+    assert "/root/secret" not in dumped
+    assert "internal.example" not in dumped
+
+
+def test_unknown_refusal_code_gets_the_fallback(state_dir):
+    _update_state(
+        state_dir,
+        statuses={_digest("c"): "failed_intake", _digest("e"): "failed_intake"},
+        failure_memory={
+            _digest("c"): {"code": "brand_new_check", "detail": _SECRET, "block": 1016},
+            # a code that is not a plain identifier is not exported either
+            _digest("e"): {"code": "OSError at /root/secret", "detail": _SECRET, "block": 1015},
+        },
+        seen_digests={_digest("c"): "miner-e", _digest("e"): "miner-f"},
+    )
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    by_hotkey = {r["author_hotkey"]: r for r in data["refused"]}
+    assert by_hotkey["miner-e"]["code"] == "brand_new_check"
+    assert by_hotkey["miner-e"]["reason"] == REFUSAL_FALLBACK
+    assert by_hotkey["miner-f"]["code"] == "unknown"
+    assert by_hotkey["miner-f"]["reason"] == REFUSAL_FALLBACK
+    assert "/root/secret" not in json.dumps(data)
+
+
+def test_links_point_at_the_published_files(state_dir):
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert data["links"] == {"audit_log": "../audit/audit.jsonl", "file_index": "../index.json"}
+    # Relative to the page, so no host is baked into the export.
+    assert all("://" not in v for v in data["links"].values())

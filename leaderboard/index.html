@@ -103,13 +103,15 @@
       <div style="max-width: 1360px; margin: 0 auto; padding: 5px 24px; font-size: 11px; color: var(--text3); display: flex; gap: 8px; flex-wrap: wrap">
         <span style="color: var(--gold)">⏣</span>
         <span>rendered from published audit artifacts · schema {{ schema }} · every number on this page is independently replayable from chain data</span>
+        <sc-if value="{{ auditLogHref }}" hint-placeholder-val="{{ false }}"><span>·</span><a href="{{ auditLogHref }}">Audit log</a></sc-if>
+        <sc-if value="{{ fileIndexHref }}" hint-placeholder-val="{{ false }}"><span>·</span><a href="{{ fileIndexHref }}">All published files</a></sc-if>
       </div>
     </div>
   </header>
 
   <nav class="epd-nav" aria-label="Sections" style="border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 82%, transparent)">
     <div style="max-width: 1360px; margin: 0 auto; padding: 0 24px; display: flex; gap: 26px; font-family: var(--mono); font-size: 11px; letter-spacing: .14em; overflow-x: auto">
-      <a href="#champion">CHAMPION</a><a href="#succession">SUCCESSION</a><a href="#arena">ARENA</a><a href="#queue">QUEUE</a><a href="#miners">MINERS</a><a href="#machinery">MACHINERY</a>
+      <a href="#champion">CHAMPION</a><a href="#succession">SUCCESSION</a><a href="#arena">ARENA</a><a href="#queue">QUEUE</a><a href="#refused">REFUSED</a><a href="#miners">MINERS</a><a href="#machinery">MACHINERY</a>
     </div>
   </nav>
 
@@ -156,6 +158,24 @@
 
   <sc-if value="{{ hasData }}" hint-placeholder-val="{{ false }}">
   <main style="max-width: 1360px; margin: 0 auto; padding: 28px 24px 0; display: flex; flex-direction: column; gap: 40px">
+
+    <!-- ============ ROUND RUNNING ============ -->
+    <sc-if value="{{ roundRunning }}" hint-placeholder-val="{{ false }}">
+    <section id="round-running" class="epd-reveal" data-screen-label="Round running" style="border: 1px solid var(--gold-line); background: var(--gold-soft); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+      <div style="display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap">
+        <h2 style="margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .04em; color: var(--gold)"><span class="epd-dot" style="margin-right: 9px; vertical-align: 1px"></span>{{ rrTitle }}</h2>
+        <span style="font-size: 11px; color: var(--text3)">results appear in the arena once the round ends — nothing is shown while it runs</span>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px">
+        <sc-for list="{{ rrEntrants }}" as="e" hint-placeholder-count="0">
+          <span style="display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line2); background: var(--panel); padding: 3px 10px; font-size: 12px">
+            <span title="{{ e.hotkey }}" style="color: var(--text)">{{ e.hotkey8 }}</span>
+            <button onclick="{{ e.copyFn }}" title="{{ e.digest }} — click to copy" style="background: none; border: none; padding: 0; font: inherit; color: var(--text2); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px">{{ e.digest8 }} <span class="{{ e.glyphClass }}" style="font-size: 10px; color: {{ e.glyphColor }}">{{ e.glyph }}</span></button>
+          </span>
+        </sc-for>
+      </div>
+    </section>
+    </sc-if>
 
     <!-- ============ HERO: THE MODEL IS IMPROVING ============ -->
     <section id="champion" class="epd-reveal" data-screen-label="Champion" style="display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 24px; align-items: stretch">
@@ -362,6 +382,39 @@
       </sc-if>
     </section>
 
+    <section id="refused" class="epd-reveal" data-screen-label="Refused" style="display: flex; flex-direction: column; gap: 12px">
+      <div style="display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 400; letter-spacing: .18em; color: var(--text2)">REFUSED <span style="color: var(--gold)">{{ refusedCountTxt }}</span></h2>
+        <span style="font-size: 11px; color: var(--text3)">submissions turned away before a duel, newest first — each with the reason it was refused</span>
+      </div>
+      <sc-if value="{{ refusedHasRows }}" hint-placeholder-val="{{ false }}">
+      <div style="border: 1px solid var(--line); background: var(--panel); overflow-x: auto">
+        <sc-raw-table style="width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 780px">
+          <sc-raw-thead>
+            <sc-raw-tr style="color: var(--text3); font-size: 11px; letter-spacing: .06em; text-align: left">
+              <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line)">MINER</sc-raw-th>
+              <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line)">DIGEST</sc-raw-th>
+              <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line)">REASON</sc-raw-th>
+              <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">BLOCK</sc-raw-th>
+            </sc-raw-tr>
+          </sc-raw-thead>
+          <sc-raw-tbody><sc-for list="{{ refusedRows }}" as="r" hint-placeholder-count="0"><sc-raw-tr style="border-bottom: 1px solid var(--line)">
+                <sc-raw-td style="padding: var(--rpad) 12px; color: var(--text)">{{ r.hotkey }}</sc-raw-td>
+                <sc-raw-td style="padding: var(--rpad) 12px; white-space: nowrap"><button onclick="{{ r.copyFn }}" title="{{ r.digest }} — click to copy" style="background: none; border: none; padding: 0; font: inherit; color: var(--text2); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px">{{ r.digest8 }} <span class="{{ r.glyphClass }}" style="font-size: 10px; color: {{ r.glyphColor }}">{{ r.glyph }}</span></button></sc-raw-td>
+                <sc-raw-td style="padding: var(--rpad) 12px; color: var(--text2)" title="{{ r.code }}">{{ r.reason }}</sc-raw-td>
+                <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: var(--text3); white-space: nowrap" title="{{ r.whenTitle }}">{{ r.blockTxt }}</sc-raw-td>
+              </sc-raw-tr></sc-for></sc-raw-tbody>
+        </sc-raw-table>
+        <sc-if value="{{ refusedHasMore }}" hint-placeholder-val="{{ false }}">
+          <button onclick="{{ toggleRefused }}" style="display: block; width: 100%; background: var(--panel2); border: none; border-top: 1px solid var(--line); color: var(--text2); font: inherit; font-size: 12px; padding: 8px 12px; cursor: pointer; text-align: left">{{ refusedToggleLabel }}</button>
+        </sc-if>
+      </div>
+      </sc-if>
+      <sc-if value="{{ !refusedHasRows }}" hint-placeholder-val="{{ true }}">
+        <div style="border: 1px dashed var(--line2); background: var(--panel); padding: 18px 16px; font-size: 12.5px; color: var(--text3)">No submission has been refused.</div>
+      </sc-if>
+    </section>
+
     <section id="miners" class="epd-reveal" data-screen-label="Leaderboard" style="display: flex; flex-direction: column; gap: 12px">
       <div style="display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap">
         <h2 style="margin: 0; font-size: 12px; font-weight: 400; letter-spacing: .18em; color: var(--text2)">MINERS</h2>
@@ -416,7 +469,7 @@
               </div>
             </sc-for>
           </div>
-          <div style="font-size: 11px; color: var(--text3)">queue right now: {{ queueDepthTxt }}</div>
+          <div style="font-size: 11px; color: var(--text3)">queue right now: {{ queueDepthTxt }} · <a href="#refused">why each refused one was refused</a></div>
         </div>
 
         <!-- EMISSIONS -->
@@ -527,6 +580,7 @@
         <span>champion digest</span><span><button onclick="{{ kingCopyF }}" title="{{ kingDigest }} — click to copy" style="background: none; border: none; padding: 0; font: inherit; color: var(--text2); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px">{{ kingDigest8 }} <span class="{{ kingGlyphClassF }}" style="font-size: 10px; color: {{ kingGlyphColorF }}">{{ kingGlyphF }}</span></button></span>
         <span>task pool digest</span><span><button onclick="{{ poolCopyF }}" title="{{ poolDigest }} — click to copy" style="background: none; border: none; padding: 0; font: inherit; color: var(--text2); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px">{{ poolDigest8 }} <span class="{{ poolGlyphClassF }}" style="font-size: 10px; color: {{ poolGlyphColorF }}">{{ poolGlyphF }}</span></button></span>
         <span>block time</span><span style="color: var(--text2)">≈ 12 s</span>
+        <sc-if value="{{ hasLinks }}" hint-placeholder-val="{{ false }}"><span>raw files</span><span><sc-if value="{{ auditLogHref }}" hint-placeholder-val="{{ false }}"><a href="{{ auditLogHref }}" style="color: var(--text2)">Audit log</a><span> · </span></sc-if><sc-if value="{{ fileIndexHref }}" hint-placeholder-val="{{ false }}"><a href="{{ fileIndexHref }}" style="color: var(--text2)">All published files</a></sc-if></span></sc-if>
       </div>
     </div>
   </footer>
@@ -535,7 +589,7 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script="" data-props="{&quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;auto&quot;, &quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;auto&quot;, &quot;tsType&quot;: &quot;'auto'|'dark'|'light'&quot;, &quot;section&quot;: &quot;Appearance&quot;}}">
 class Component extends DCLogic {
-  state = { data: null, failed: false, q: '', showAllMiners: false, themeMode: null, openDuel: null };
+  state = { data: null, failed: false, q: '', showAllMiners: false, showAllRefused: false, themeMode: null, openDuel: null };
 
   componentDidMount() {
     // Inlined snapshot (static export): render once, never poll.
@@ -581,6 +635,9 @@ class Component extends DCLogic {
              glyphColor: c ? 'var(--ok)' : 'var(--text3)' };
   }
   short(dig) { const h = (dig || '').replace(/^sha256:/, ''); return h.slice(0, 8); }
+  shortKey(hk) { const s = hk || ''; return s.length > 12 ? s.slice(0, 8) + '…' : s; }
+  // Only relative paths and http(s) URLs become links.
+  safeHref(u) { return typeof u === 'string' && /^(https?:\/\/|\.{0,2}\/|[\w.-]+(\/|$))/.test(u) ? u : ''; }
   copyFn(txt, key) {
     return () => {
       try { navigator.clipboard.writeText(txt); } catch (e) {}
@@ -668,6 +725,9 @@ class Component extends DCLogic {
   renderVals() {
     const d = this.state.data;
     const mode = this.state.themeMode || (this.props.theme && this.props.theme !== 'auto' ? this.props.theme : 'auto');
+    // Raw files published beside the page; the paths are relative to it.
+    const links = (d && d.links) || {};
+    const auditLogHref = this.safeHref(links.audit_log), fileIndexHref = this.safeHref(links.file_index);
     const base = {
       themeAttr: mode === 'auto' ? undefined : mode,
       themeLabel: mode,
@@ -681,7 +741,8 @@ class Component extends DCLogic {
       hasData: !!d,
       q: this.state.q,
       onSearch: (e) => this.setState({ q: e.target.value }),
-      schema: d ? d.schema : 'epd1'
+      schema: d ? d.schema : 'epd1',
+      auditLogHref, fileIndexHref, hasLinks: !!(auditLogHref || fileIndexHref)
     };
     if (!d) return Object.assign(base, { chainName: '', netuid: '', network: '', genBlockTxt: '\u2026', phaseIsBurn: false, phaseIsLive: false, hasRound: false, roundTxt: '' });
 
@@ -807,6 +868,32 @@ class Component extends DCLogic {
       waiting: this.durTxt(q.waiting_blocks)
     }));
 
+    // ---- round running ----
+    // Only that a round is open and who entered it; results land when it ends.
+    const rr = d.round_running || null;
+    const rrList = rr ? (rr.entrants || []) : [];
+    const rrEntrants = rrList.map((e, i) => ({
+      hotkey: e.author_hotkey || '', hotkey8: this.shortKey(e.author_hotkey),
+      digest: e.digest, digest8: this.short(e.digest),
+      copyFn: this.copyFn(e.digest, 'rr' + i),
+      ...this.copyBits(e.digest, 'rr' + i)
+    }));
+    const rrTitle = rr ? 'Round ' + this.fmtInt(rr.round) + ' running — opened at block ' + this.fmtInt(rr.block)
+      + ' — ' + this.fmtInt(rrList.length) + (rrList.length === 1 ? ' entrant' : ' entrants') : '';
+
+    // ---- refused ----
+    const refusedAll = d.refused || [];
+    const showAllRefused = this.state.showAllRefused;
+    const refusedRows = (showAllRefused ? refusedAll : refusedAll.slice(0, cap)).map((r, i) => ({
+      hotkey: r.author_hotkey || '—',
+      digest: r.digest, digest8: this.short(r.digest),
+      copyFn: this.copyFn(r.digest, 'ref' + i),
+      ...this.copyBits(r.digest, 'ref' + i),
+      reason: r.reason, code: r.code,
+      blockTxt: r.block ? this.fmtInt(r.block) : '—',
+      whenTitle: r.block ? this.agoTxt(now, r.block) : 'block not recorded'
+    }));
+
     // ---- emissions ----
     const em = d.emissions, cf = em.configured || {};
     const emisRows = [
@@ -851,6 +938,7 @@ class Component extends DCLogic {
     }));
 
     const corDelta = d.lineage && d.lineage.length ? d.lineage[d.lineage.length - 1].delta : kp.delta_clamp;
+    const sinceGenesis = Math.round((kp.king_acc_ema - (S.length ? S[0].ema : 0.5)) * 1000) / 10;
 
     return Object.assign(base, roundVars, {
       chainName: d.chain.name, netuid: d.chain.netuid, network: d.chain.network,
@@ -858,7 +946,7 @@ class Component extends DCLogic {
       phaseIsBurn: kp.phase === 'burn', phaseIsLive: kp.phase === 'live',
 
       kingPct: this.pct2(kp.king_acc_ema),
-      sinceGenesisTxt: '+' + ((kp.king_acc_ema - (S.length ? S[0].ema : 0.5)) * 100).toFixed(1) + ' pp since genesis',
+      sinceGenesisTxt: (sinceGenesis >= 0 ? '+' : '') + sinceGenesis.toFixed(1) + ' pp since genesis',
       coronationsTxt: this.fmtInt(kp.organic_dethrones) + (kp.organic_dethrones === 1 ? ' coronation' : ' coronations'),
       coronationsCountTxt: this.fmtInt(kp.organic_dethrones),
       duelsTotalTxt: this.fmtInt(kp.duels_total),
@@ -900,6 +988,13 @@ class Component extends DCLogic {
       queueRows, queueHasRows: queueRows.length > 0,
       queueCountTxt: this.fmtInt(queueRows.length),
       queueDepthTxt: kp.queue_depth === 0 ? 'empty — a fresh submission duels immediately' : this.fmtInt(kp.queue_depth) + ' waiting',
+
+      roundRunning: !!rr, rrTitle, rrEntrants,
+      refusedRows, refusedHasRows: refusedAll.length > 0,
+      refusedCountTxt: this.fmtInt(refusedAll.length),
+      refusedHasMore: refusedAll.length > cap,
+      toggleRefused: () => this.setState(s => ({ showAllRefused: !s.showAllRefused })),
+      refusedToggleLabel: showAllRefused ? '▴ show newest ' + cap + ' only' : '▾ show all ' + refusedAll.length + ' refused',
 
       emisRows,
       bonusFactorTxt: em.bonus_factor != null ? em.bonus_factor.toFixed(3) : '\u2014',

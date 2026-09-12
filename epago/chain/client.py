@@ -203,9 +203,8 @@ class ChainClient(ABC):
         * round numbers must strictly increase — a replayed or duplicated number
           is dropped;
         * consecutive starts must be at least
-          ``constants.ROUND_MIN_INTERVAL_BLOCKS`` apart, so the cadence is a
-          property of the chain and not of how often the authority runs the
-          command.
+          ``constants.ROUND_MIN_INTERVAL_BLOCKS`` apart when a validator sets
+          a floor (0 by default: every start counts).
         """
         if not authority_hotkey:
             return []
