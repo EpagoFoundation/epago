@@ -650,7 +650,7 @@ class Component extends DCLogic {
 
   // Per-duel drill-down: which public tasks the challenger won/tied/lost, how
   // the judge scored, and the exact eval-data fingerprints to reproduce it.
-  duelDetail(x) {
+  duelDetail(x, chain) {
     const det = x.detail || null;
     const toggleFn = () => this.setState(s => ({ openDuel: s.openDuel === x.round_id ? null : x.round_id }));
     // All rows start collapsed; a click expands one duel's detail.
@@ -707,7 +707,10 @@ class Component extends DCLogic {
       judgeTxt,
       taskCells,
       provRows,
-      replayHint: '.venv/bin/python scripts/replay_verdict.py <record>.json --corpus corpus.db --network test --netuid 385',
+      // Built from the exported chain, so the command names the network this page is for.
+      replayHint: ['.venv/bin/python scripts/replay_verdict.py <record>.json --corpus corpus.db',
+        chain && chain.network ? '--network ' + chain.network : '',
+        chain && chain.netuid != null ? '--netuid ' + chain.netuid : ''].filter(Boolean).join(' '),
     };
   }
 
@@ -808,7 +811,7 @@ class Component extends DCLogic {
       const pos = margin >= 0;
       const w = Math.min(100, Math.abs(margin) / maxAbs * 100);
       return {
-        ...this.duelDetail(x),
+        ...this.duelDetail(x, d.chain),
         glyph: m.glyph, label: m.label, color: m.color, rowBg: m.rowBg,
         roundTxt: x.round ? '#' + this.fmtInt(x.round) : '\u2014',
         when: this.agoTxt(now, x.block), blockTitle: 'block ' + this.fmtInt(x.block),
