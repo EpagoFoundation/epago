@@ -2438,3 +2438,78 @@ def test_a_generator_release_publishes_no_manifest(tmp_path):
     h = _generator_release_harness(tmp_path)
     h.service._publish_pool_manifest()
     assert not list((h.service.state.state_dir / "publications").glob("*manifest*"))
+
+
+# --- champion accuracy: measured, never assumed -------------------------------------
+
+
+def _king_scored(public_acc: float, private_acc: float) -> DuelOutcome:
+    """A losing duel whose only interesting part is how the king scored."""
+    return DuelOutcome(
+        public=make_half(0.01, public_acc, public_acc + 0.01),
+        private=make_half(0.01, private_acc, private_acc + 0.01),
+        lcb_pub=-0.01,
+        delta=0.03,
+        accepted=False,
+        boot_seed_hex="ab" * 8,
+        public_seed_hex="cd" * 8,
+        judge_tier_counts=(),
+    )
+
+
+def test_the_first_round_sets_champion_accuracy_and_later_rounds_average_it(tmp_path):
+    """A new validator has not measured its king. Its 0.5 stand-in only feeds the
+    first floor: the first scored round replaces it outright, and from then on
+    each round moves the average."""
+    from epago.core.stats import update_acc_ema
+    from epago.validator.roundapi import RoundTrigger
+
+    h = _generator_release_harness(tmp_path, outcome=_king_scored(0.20, 0.10))
+    h.cfg = replace(h.service.cfg, chain=replace(h.service.cfg.chain, round_authority_hotkey=""))
+    h.service.cfg = h.cfg
+    trigger = RoundTrigger()
+    h.service._round_trigger = trigger
+    assert h.state.king_acc_ema == 0.5 and h.state.king_acc_history == []
+
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.service.tick()
+    h.chain.advance(1)
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    assert h.state.last_round_run == 1
+    assert h.state.king_acc_ema == pytest.approx(0.15)          # (0.20 + 0.10) / 2, no 0.5 in it
+    (first,) = h.state.king_acc_history
+    assert (first["round"], first["coronation"]) == (1, False)
+    assert first["observed"] == pytest.approx(0.15) and first["ema"] == pytest.approx(0.15)
+    (record_file,) = list(h.service.audit_log.dir.rglob("*_round000001.json"))
+    assert json.loads(record_file.read_text())["king_acc"]["observed"] == pytest.approx(0.15)
+
+    h.holder["outcome"] = _king_scored(0.40, 0.30)
+    add_challenger(h, "bob", "hk-bob", "ck-bob-001", uid=3, digest_char="b",
+                   king_digest=h.state.king.ref.digest)
+    h.service.tick()
+    h.chain.advance(100)
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    assert h.state.last_round_run == 2
+    assert h.state.king_acc_ema == pytest.approx(update_acc_ema(0.15, 0.35))
+    assert [e["round"] for e in h.state.king_acc_history] == [1, 2]
+
+
+def test_champion_accuracy_history_survives_a_restart(tmp_path):
+    from epago.validator.state import ValidatorState
+
+    st = ValidatorState.load(tmp_path)
+    st.king_acc_history.append({"round": 1, "block": 10, "observed": 0.2, "ema": 0.2, "coronation": False})
+    st.save()
+    assert ValidatorState.load(tmp_path).king_acc_history == st.king_acc_history
+
+
+def test_a_state_file_from_before_the_history_still_loads(tmp_path):
+    from epago.validator.state import ValidatorState
+
+    (tmp_path / "state.json").write_text(json.dumps({"king_acc_ema": 0.44}))
+    st = ValidatorState.load(tmp_path)
+    assert st.king_acc_history == [] and st.king_acc_ema == 0.44

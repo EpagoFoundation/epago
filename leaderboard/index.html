@@ -182,7 +182,7 @@
       <div style="min-width: 0; display: flex; flex-direction: column; gap: 8px">
         <div style="display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap">
           <h1 style="margin: 0; font-size: 13px; font-weight: 400; letter-spacing: .18em; color: var(--text2)">CHAMPION ACCURACY</h1>
-          <span style="font-size: 11px; color: var(--text3)">each step up is a coronation — a challenger provably beat the reigning model and took the crown</span>
+          <span style="font-size: 11px; color: var(--text3)">the line moves once per scored round · ♛ marks a coronation — a challenger provably beat the reigning model and took the crown</span>
         </div>
         <div style="display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap">
           <span style="font-size: 52px; font-weight: 700; letter-spacing: -.02em; line-height: 1; color: var(--text)">{{ kingPct }}</span>
@@ -216,7 +216,7 @@
             </g>
           </sc-for>
         </svg>
-        <div style="font-size: 11px; color: var(--text3)">accuracy = exponential moving average over fresh research tasks · blocks ≈ 12 s each · exact values per coronation in the succession table below</div>
+        <div style="font-size: 11px; color: var(--text3)">accuracy = the king's score on each round's exam, averaged across rounds — the first scored round sets the start · blocks ≈ 12 s each · exact values per coronation in the succession table below</div>
       </div>
 
       <!-- KING CARD -->
@@ -756,7 +756,11 @@ class Component extends DCLogic {
     const S = d.accuracy_series || [];
     const bMin = S.length ? S[0].block : 0, bMax = S.length ? S[S.length - 1].block : 1;
     const vals = S.map(p => p.ema);
-    const yMin = Math.min(...vals, 0.5) - 0.03, yMax = Math.max(...vals) + 0.035;
+    // The axis follows the data rather than starting at 50%: a young validator's
+    // champion can score far below that, and a line under the grid reads as nothing.
+    const yMin = S.length ? Math.max(0, Math.floor((Math.min(...vals) - 0.02) * 10) / 10) : 0;
+    const yMax = S.length
+      ? Math.max(Math.min(1, Math.ceil((Math.max(...vals) + 0.02) * 10) / 10), Math.min(1, yMin + 0.2)) : 1;
     const X = b => 44 + (b - bMin) / Math.max(1, bMax - bMin) * (922 - 44);
     const Y = v => 26 + (yMax - v) / (yMax - yMin) * (264 - 26);
     let accPath = '';
@@ -764,9 +768,10 @@ class Component extends DCLogic {
       const x = X(p.block).toFixed(1), y = Y(p.ema).toFixed(1);
       accPath += i === 0 ? `M${x} ${y}` : `H${x}V${y}`;
     });
+    if (S.length) accPath += 'H922';   // the latest value holds until the next round
     const accArea = S.length ? accPath + `V264H${X(bMin).toFixed(1)}Z` : '';
     const gridLines = [];
-    for (let v = 0.5; v <= yMax; v += 0.1) {
+    for (let i = 0, v = yMin; v <= yMax + 1e-9; i++, v = yMin + i * 0.1) {
       const y = Y(v);
       gridLines.push({ y: y.toFixed(1), ty: (y + 4).toFixed(1), label: Math.round(v * 100) + '%' });
     }
@@ -781,7 +786,7 @@ class Component extends DCLogic {
       };
     });
     const last = S[S.length - 1] || { block: 0, ema: 0 };
-    const xTicks = [bMin, Math.round((bMin + bMax) / 2), bMax].map(b => ({
+    const xTicks = (bMax > bMin ? [bMin, Math.round((bMin + bMax) / 2), bMax] : S.length ? [bMin] : []).map(b => ({
       x: X(b).toFixed(1), label: 'blk ' + this.fmtInt(b), sub: this.agoTxt(now, b)
     }));
 
@@ -927,34 +932,43 @@ class Component extends DCLogic {
     const nextPublishBlocks = (pool.last_publish_block + pool.rotation_blocks) - now;
 
     // ---- lineage ----
-    const emaAt = b => { const hit = S.find(p => p.block === b); return hit ? this.pct1(hit.ema) : ''; };
+    const emaAt = r => { const hit = S.find(p => p.round === r); return hit ? this.pct1(hit.ema) : ''; };
     const lineageItems = (d.lineage || []).map((c, i) => ({
       n: i + 1, hotkey: c.author_hotkey,
       digest: c.digest, digest8: this.short(c.digest), copyFn: this.copyFn(c.digest, 'lin' + i),
       ...this.copyBits(c.digest, 'lin' + i),
-      pct: emaAt(c.block), lcbTxt: this.f4(c.lcb), deltaTxt: this.f4(c.delta),
+      pct: emaAt(c.round), lcbTxt: this.f4(c.lcb), deltaTxt: this.f4(c.delta),
       when: this.agoTxt(now, c.block), blockTitle: 'block ' + this.fmtInt(c.block),
       borderColor: i === (d.lineage.length - 1) ? 'var(--gold-line)' : 'var(--line)'
     }));
 
     const corDelta = d.lineage && d.lineage.length ? d.lineage[d.lineage.length - 1].delta : kp.delta_clamp;
-    const sinceGenesis = Math.round((kp.king_acc_ema - (S.length ? S[0].ema : 0.5)) * 1000) / 10;
+    // No number until a round is scored: the validator's 0.5 stand-in is not an accuracy.
+    const measured = kp.king_acc_ema != null;
+    const sinceGenesis = measured ? Math.round((kp.king_acc_ema - kp.king_acc_genesis) * 1000) / 10 : 0;
 
     return Object.assign(base, roundVars, {
       chainName: d.chain.name, netuid: d.chain.netuid, network: d.chain.network,
       genBlockTxt: this.fmtInt(now),
       phaseIsBurn: kp.phase === 'burn', phaseIsLive: kp.phase === 'live',
 
-      kingPct: this.pct2(kp.king_acc_ema),
-      sinceGenesisTxt: (sinceGenesis >= 0 ? '+' : '') + sinceGenesis.toFixed(1) + ' pp since genesis',
+      kingPct: measured ? this.pct2(kp.king_acc_ema) : '\u2014',
+      sinceGenesisTxt: !measured ? 'no round scored yet'
+        : kp.king_acc_rounds === 1 ? 'first measurement \u00B7 round ' + this.fmtInt(last.round)
+        : (sinceGenesis >= 0 ? '+' : '') + sinceGenesis.toFixed(1) + ' pp since genesis',
       coronationsTxt: this.fmtInt(kp.organic_dethrones) + (kp.organic_dethrones === 1 ? ' coronation' : ' coronations'),
       coronationsCountTxt: this.fmtInt(kp.organic_dethrones),
       duelsTotalTxt: this.fmtInt(kp.duels_total),
       acceptRateTxt: this.pct1(kp.accept_rate),
-      chartAria: 'Champion accuracy over time, rising from ' + this.pct1(S.length ? S[0].ema : 0.5) + ' to ' + this.pct2(kp.king_acc_ema) + ' across ' + corPts.length + ' coronations. Exact values per coronation are in the line of succession table.',
+      chartAria: measured
+        ? 'Champion accuracy after each scored round: ' + this.pct1(kp.king_acc_genesis) + ' at genesis, '
+          + this.pct2(kp.king_acc_ema) + ' now, over ' + this.fmtInt(kp.king_acc_rounds)
+          + (kp.king_acc_rounds === 1 ? ' round' : ' rounds') + ' and ' + corPts.length
+          + (corPts.length === 1 ? ' coronation.' : ' coronations.')
+        : 'No round has been scored yet, so there is no champion accuracy to plot.',
       accPath, accArea, gridLines, corMarks, xTicks,
-      endX: X(last.block).toFixed(1), endY: Y(last.ema).toFixed(1),
-      endLabelX: (X(last.block) + 10).toFixed(1), endLabelY: (Y(last.ema) + 5).toFixed(1),
+      endX: S.length ? '922' : '-99', endY: Y(last.ema).toFixed(1),
+      endLabelX: S.length ? '932' : '-99', endLabelY: (Y(last.ema) + 5).toFixed(1),
 
       kingRepo: k.repo, kingDigest: k.digest, kingDigest8: this.short(k.digest),
       kingGlyph: this.copyBits(k.digest, 'king-hdr').glyph,
@@ -973,7 +987,7 @@ class Component extends DCLogic {
       bonusTxt: em.bonus_factor != null ? '\u00D7' + em.bonus_factor.toFixed(3) : '\u2014',
       decayTxt: em.reign_decay != null ? '\u00D7' + em.reign_decay.toFixed(5) : '\u2014',
 
-      genesisPct: this.pct1(S.length ? S[0].ema : 0.5),
+      genesisPct: measured ? this.pct1(kp.king_acc_genesis) : 'not measured yet',
       lineageItems,
 
       duelRows,

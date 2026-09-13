@@ -578,3 +578,42 @@ def test_links_point_at_the_published_files(state_dir):
     assert data["links"] == {"audit_log": "../audit/audit.jsonl", "file_index": "../index.json"}
     # Relative to the page, so no host is baked into the export.
     assert all("://" not in v for v in data["links"].values())
+
+
+# --- champion accuracy ---------------------------------------------------------------
+
+
+def _with_acc_history(state_dir, history):
+    s = json.loads((state_dir / "state.json").read_text())
+    s["king_acc_history"] = history
+    (state_dir / "state.json").write_text(json.dumps(s))
+
+
+_TWO_ROUNDS = [
+    {"round": 1, "block": 1100, "observed": 0.21, "ema": 0.21, "coronation": False},
+    {"round": 2, "block": 1200, "observed": 0.10, "ema": 0.19, "coronation": True},
+]
+
+
+def test_no_champion_accuracy_is_shown_before_a_round_is_scored(state_dir):
+    """The validator's 0.5 stand-in is not a measurement, so nothing is shown."""
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert data["accuracy_series"] == []
+    kp = data["kpis"]
+    assert (kp["king_acc_ema"], kp["king_acc_ema_prev"], kp["king_acc_genesis"], kp["king_acc_rounds"]) == (
+        None, None, None, 0,
+    )
+    assert data["king"]["acc_ema"] is None
+
+
+def test_champion_accuracy_comes_from_each_rounds_measurement(state_dir):
+    _with_acc_history(state_dir, _TWO_ROUNDS)
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert [(p["round"], p["ema"], p["coronation"]) for p in data["accuracy_series"]] == [
+        (1, 0.21, False), (2, 0.19, True),
+    ]
+    kp = data["kpis"]
+    assert (kp["king_acc_genesis"], kp["king_acc_ema_prev"], kp["king_acc_ema"], kp["king_acc_rounds"]) == (
+        0.21, 0.21, 0.19, 2,
+    )
+    assert data["king"]["acc_ema"] == 0.19

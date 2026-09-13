@@ -776,11 +776,27 @@ class ValidatorService:
             )
 
         # One EMA update per round, from the king's measured accuracy on the
-        # round's exam — the king answered it once, so there is one observation.
+        # round's exam — one observation per round.
+        observed: float | None = None
         if results:
             sample = results[0].outcome
             observed = (sample.public.king_acc + sample.private.king_acc) / 2.0
-            self.state.king_acc_ema = update_acc_ema(pre_round_ema, observed)
+            if self.state.king_acc_history:
+                self.state.king_acc_ema = update_acc_ema(pre_round_ema, observed)
+            else:
+                # The first scored round is the first measurement. Before it the
+                # EMA holds a stand-in the first floor is computed from; blending
+                # that in would report an accuracy no round ever measured.
+                self.state.king_acc_ema = observed
+            self.state.king_acc_history.append(
+                {
+                    "round": start.round,
+                    "block": self.deps.clock(),
+                    "observed": observed,
+                    "ema": self.state.king_acc_ema,
+                    "coronation": winner is not None,
+                }
+            )
             self.state.clean_duels += len(results)
             self._feed_difficulty(sample, public_tasks)
 
@@ -802,6 +818,10 @@ class ValidatorService:
                 "mu_hat_priv": confirmation.outcome.private.mu_hat,
                 "confirmed": bool(confirmation.outcome.accepted),
             }
+        if observed is not None:
+            # What the dashboard's champion accuracy is built from, published with
+            # the round so it can be checked without the validator's state.
+            round_record["king_acc"] = {"observed": observed, "ema": self.state.king_acc_ema}
         self.audit_log.stage_delayed(
             f"round{start.round:06d}",
             json.dumps(round_record, sort_keys=True),

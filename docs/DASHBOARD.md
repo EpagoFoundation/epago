@@ -20,7 +20,7 @@ expose internal accuracy climbing while real capability stood still.
 |---|---|---|
 | KPI row | Champion accuracy (EMA + delta), reign age & decay, duel counts, organic dethrones, verdict p95 vs the 48 h target, queue depth | `state.json`, audit log |
 | Round running | Shown only while a round is being evaluated: its number, the block it opened at, and its entrants. No progress is shown; results appear when the round ends | `state.json` (`round_in_progress`) |
-| Model improvement | Accuracy-over-time line with coronation markers; per-duel LCB vs the adaptive floor δ | audit log |
+| Model improvement | Champion accuracy after each scored round, with coronation markers; per-duel LCB vs the adaptive floor δ | `state.json` (`king_acc_history`), audit log |
 | Duel feed | Every duel: miner, checkpoint, μ public/private, LCB, δ, judge reliance, reveal→verdict latency, outcome | audit log |
 | Miners | Leaderboard: attempts, crowns, near misses, best LCB, arena credit, last active | audit log + `state.json` |
 | Submission pipeline | Funnel of where submissions ended, cheapest gate first | `state.json` |
@@ -31,6 +31,15 @@ expose internal accuracy climbing while real capability stood still.
 | Task ecosystem | Tasks per duel, generator release, private-pool epoch/digest/rotation, LLM-judge reliance per duel | audit log |
 | Score determinism | Calibration noise floor and the δ clamp derived from it | `state.json` |
 | Benchmark anchor | Internal EMA gain vs external benchmark accuracy per anchor run, with the divergence alert | `state.json` (`anchor_history`) |
+
+**Champion accuracy is measured, never assumed.** A new validator has not yet
+measured its king, so it holds a 0.5 stand-in to compute the first round's floor.
+That value is never shown: the first scored round replaces it outright and
+becomes the genesis value, and later rounds move the average
+(`KING_ACC_EMA_K`). Each round's measurement is also published in its round file
+(`king_acc`). A duel's audit record keeps the value its own floor was computed
+from, which is the one from before its round. Until a round is scored the page
+says so instead of showing a number.
 
 Duel outcomes come from the duel's own verdict record, never from the submission's
 later lifecycle — a near miss that goes stale after the next dethrone still shows as a
