@@ -28,7 +28,7 @@ from epago.core.emissions import (
     phase_b_active,
     reign_decay_factor,
 )
-from epago.core.stats import noise_floor_from_calibration
+from epago.core.stats import adaptive_delta, noise_floor_from_calibration
 from epago.core.types import VerdictDecision
 
 DASHBOARD_SCHEMA = "epd1"
@@ -234,6 +234,11 @@ def _kpis(state: dict, records: list[dict], block: int, cfg: EpagoConfig, acc_hi
         "last_round_run": state.get("last_round_run", 0),
         "noise_floor": noise,
         "delta_clamp": constants.DELTA_NOISE_MULTIPLIER * noise,
+        # The bar the next challenger has to clear: the headroom term from the
+        # champion's measured accuracy (the validator's 0.5 stand-in before any
+        # round), clamped above noise. The clamp alone understates it whenever the
+        # king is weak enough for the headroom term to bind.
+        "delta_next": adaptive_delta(acc_history[-1]["ema"] if acc_history else 0.5, noise),
         "phase": "live"
         if phase_b_active(
             state.get("clean_duels", 0),

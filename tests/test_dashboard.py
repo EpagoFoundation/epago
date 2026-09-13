@@ -617,3 +617,22 @@ def test_champion_accuracy_comes_from_each_rounds_measurement(state_dir):
         0.21, 0.21, 0.19, 2,
     )
     assert data["king"]["acc_ema"] == 0.19
+
+
+def test_the_next_bar_uses_measured_accuracy_not_only_the_noise_clamp(state_dir):
+    """A weak king leaves headroom, and then the headroom term binds above the clamp."""
+    from epago.core.stats import adaptive_delta, noise_floor_from_calibration
+
+    _with_acc_history(state_dir, _TWO_ROUNDS)
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    noise = noise_floor_from_calibration([0.004])
+    assert data["kpis"]["delta_next"] == pytest.approx(adaptive_delta(0.19, noise))
+    assert data["kpis"]["delta_next"] > data["kpis"]["delta_clamp"]
+
+
+def test_before_any_round_the_next_bar_uses_the_stand_in(state_dir):
+    from epago.core.stats import adaptive_delta, noise_floor_from_calibration
+
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    expected = adaptive_delta(0.5, noise_floor_from_calibration([0.004]))
+    assert data["kpis"]["delta_next"] == pytest.approx(expected)
