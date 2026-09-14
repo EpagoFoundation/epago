@@ -274,7 +274,7 @@
     <section id="arena" class="epd-reveal" data-screen-label="Duels" style="display: flex; flex-direction: column; gap: 12px">
       <div style="display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap">
         <h2 style="margin: 0; font-size: 12px; font-weight: 400; letter-spacing: .18em; color: var(--text2)">THE ARENA</h2>
-        <span style="font-size: 11px; color: var(--text3)">every duel, newest first — a challenger's 99.9% lower confidence bound (score) must clear the adaptive threshold (needed) to take the crown</span>
+        <span style="font-size: 11px; color: var(--text3)">every duel, newest first — to take the crown, a challenger's 99.9% lower confidence bound (score) must clear the adaptive threshold (needed) and its mean on the private tasks (private μ) must be above zero</span>
         <span style="font-size: 11px; color: var(--gold); border: 1px solid var(--gold-line); border-radius: 3px; padding: 2px 8px; white-space: nowrap">▸ click any row's OUTCOME to expand per-task results &amp; eval data · build v5 · live auto-refresh 30s</span>
       </div>
       <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap">
@@ -290,7 +290,7 @@
         </div>
       </div>
       <div style="border: 1px solid var(--line); background: var(--panel); overflow-x: auto">
-        <sc-raw-table style="width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 900px">
+        <sc-raw-table style="width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 980px">
           <sc-raw-thead>
             <sc-raw-tr style="color: var(--text3); font-size: 11px; letter-spacing: .06em; text-align: left">
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line)">OUTCOME</sc-raw-th>
@@ -302,6 +302,7 @@
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">NEEDED δ</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">MARGIN</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); min-width: 130px"><span aria-hidden="true"></span></sc-raw-th>
+              <sc-raw-th scope="col" title="challenger minus king on the private tasks — must be above zero" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">PRIVATE μ</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">VERDICT IN</sc-raw-th>
             </sc-raw-tr>
           </sc-raw-thead>
@@ -321,8 +322,9 @@
                     <div style="width: 50%"><div style="height: 8px; background: {{ d.barPosColor }}; width: {{ d.barPosW }}%"></div></div>
                   </div>
                 </sc-raw-td>
+                <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: {{ d.muPrivColor }}">{{ d.muPrivTxt }}</sc-raw-td>
                 <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: var(--text3); white-space: nowrap">{{ d.latency }}</sc-raw-td>
-              </sc-raw-tr><sc-if value="{{ d.isOpen }}" hint-placeholder-val="{{ false }}"><sc-raw-tr style="background: var(--panel2)"><sc-raw-td colspan="10" style="padding: 16px 20px; border-bottom: 1px solid var(--line)">
+              </sc-raw-tr><sc-if value="{{ d.isOpen }}" hint-placeholder-val="{{ false }}"><sc-raw-tr style="background: var(--panel2)"><sc-raw-td colspan="11" style="padding: 16px 20px; border-bottom: 1px solid var(--line)">
                 <div style="display: flex; flex-direction: column; gap: 14px; font-size: 12px; max-width: 1100px">
                   <sc-if value="{{ d.hasDetail }}" hint-placeholder-val="{{ false }}">
                     <div>
@@ -826,6 +828,8 @@ class Component extends DCLogic {
         barPosW: pos ? w.toFixed(1) : '0',
         barNegW: pos ? '0' : w.toFixed(1),
         barPosColor: x.outcome === 'accepted' ? 'var(--gold)' : 'var(--blue)',
+        muPrivTxt: x.mu_priv != null ? this.f4(x.mu_priv) : '\u2014',
+        muPrivColor: x.mu_priv > 0 ? 'var(--text)' : 'var(--text3)',
         latency: this.durTxt(x.latency_blocks)
       };
     });
