@@ -377,9 +377,9 @@ def build_production_deps(
             ref_resolver=ref_index.resolve,
         )
         run_duel_fn = runner.run_duel
-        # The remote eval server has no batch endpoint; the service falls back
-        # to one duel per entrant over the round's shared exam.
-        run_round_duel_fn = None
+        # The whole round goes to the server in one call, so the king answers
+        # the round's exam once instead of once per entrant.
+        run_round_duel_fn = runner.run_round_duel
         run_calibration_fn = runner.run_calibration_duel
         run_probes_fn = runner.run_probes
         materialize_dep = registering_materialize
