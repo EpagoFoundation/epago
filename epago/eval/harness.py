@@ -484,6 +484,7 @@ def run_rollouts_batched(
     timeout_s: float = constants.ROLLOUT_TIMEOUT_S,
     llm_judge: LlmJudge | None = None,
     on_result=None,
+    transcript: tuple[str, str] | None = None,
 ) -> list[RolloutResult]:
     """Run many episodes with up to ``concurrency`` in flight.
 
@@ -493,6 +494,10 @@ def run_rollouts_batched(
     :class:`Episode`; results come back in ``tasks`` order. An episode whose
     session construction or judging crashes scores incorrect — one hostile
     task can never abort the batch.
+
+    ``transcript`` is ``(model, phase)`` when finished episodes should also be
+    written out in full (:mod:`epago.eval.transcripts`); it changes nothing
+    about how an episode runs or is scored.
     """
     from epago.eval.backend import generate_many
 
@@ -513,6 +518,10 @@ def run_rollouts_batched(
         results[index] = res
         if on_result is not None:
             on_result(index, res)
+        if transcript is not None:
+            from epago.eval import transcripts
+
+            transcripts.record(transcript[0], transcript[1], index, ep, res)
 
     while queue or active:
         while queue and len(active) < conc:

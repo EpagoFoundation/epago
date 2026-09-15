@@ -278,6 +278,29 @@ def test_sharded_sweep_matches_a_single_replica_exactly() -> None:
         ]
 
 
+def test_a_pooled_sweep_writes_transcripts_under_its_label(tmp_path, monkeypatch) -> None:
+    import json
+
+    from epago.eval import transcripts
+
+    monkeypatch.setenv("EPAGO_EVAL_TRANSCRIPT_DIR", str(tmp_path))
+    tasks = make_tasks("t", 12)
+    pool = GpuPool(["0", "1"], engine_factory=Factory({KING_DIR: knower({t.task_id for t in tasks[:5]})}))
+    job = transcripts.begin_job("calibration")
+    try:
+        out = pool.run_sweeps(
+            [SweepRequest(KING_DIR, phases_of(("public", tasks)), "king")],
+            session_factory=FakeEnv().tools_for_task,
+        )
+    finally:
+        transcripts.end_job()
+    rows = [json.loads(line) for line in (job / "king.public.jsonl").read_text().splitlines()]
+    assert {r["task_id"]: r["correct"] for r in rows} == {
+        r.task_id: r.correct for r in out[0].phases["public"]
+    }
+    assert all(r["messages"] for r in rows)
+
+
 def test_results_come_back_in_task_order_not_completion_order() -> None:
     tasks = make_tasks("t", 37)
     pool = GpuPool(list("0123"), engine_factory=Factory({KING_DIR: knower(set())}))

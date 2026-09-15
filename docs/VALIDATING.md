@@ -40,6 +40,7 @@ against GPU memory:
 | `EPAGO_EVAL_LOW_VRAM` | Keeps one engine resident at a time — roughly halves peak GPU memory at the cost of one model reload per duel. Single-GPU boxes only; a multi-GPU box has no reason to swap. |
 | `EPAGO_VLLM_GPU_MEM_UTIL` | Explicit per-engine share of GPU memory (vLLM `gpu_memory_utilization`). |
 | `EPAGO_EVAL_GPUS` | Which cards the evaluator may use (default: all visible). A count (`4`) or a list of logical indices into the visible set (`0,2,5`; `3,` for exactly one). Counts cards, before they are grouped for `EPAGO_VLLM_TP`. |
+| `EPAGO_EVAL_TRANSCRIPT_DIR` | Off by default. When set, the eval server writes every finished episode of a duel, round or calibration run — the task, each model output, each tool call and its result, and the scored answer — as JSONL under this directory, one folder per run. The files hold private-half tasks and answers, so keep the directory private. |
 
 ### Using every card
 

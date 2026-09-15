@@ -179,6 +179,7 @@ def run_duel(
                 env.tools_for_task,
                 llm_judge=llm_judge,
                 on_result=report,
+                transcript=(model, phase),
             )
         return out
 
@@ -312,7 +313,12 @@ def run_round_duel(
                     )
 
             out[phase] = run_rollouts_batched(
-                backend, ordered, env.tools_for_task, llm_judge=llm_judge, on_result=report
+                backend,
+                ordered,
+                env.tools_for_task,
+                llm_judge=llm_judge,
+                on_result=report,
+                transcript=(model, phase),
             )
         return out
 
@@ -487,8 +493,14 @@ def run_calibration_duel(
         second = sweeps[1].phases["calibration"]
     else:
         backend = backend_factory(king_dir)
-        first = run_rollouts_batched(backend, ordered, env.tools_for_task, llm_judge=llm_judge)
-        second = run_rollouts_batched(backend, ordered, env.tools_for_task, llm_judge=llm_judge)
+        first = run_rollouts_batched(
+            backend, ordered, env.tools_for_task, llm_judge=llm_judge,
+            transcript=("calibration-a", "calibration"),
+        )
+        second = run_rollouts_batched(
+            backend, ordered, env.tools_for_task, llm_judge=llm_judge,
+            transcript=("calibration-b", "calibration"),
+        )
     diffs = [int(b.correct) - int(a.correct) for a, b in zip(first, second)]
     if not diffs:
         raise ValueError("calibration duel produced no comparable rollouts")

@@ -310,6 +310,41 @@ def test_remote_round_refuses_results_for_a_different_field(round_arena, monkeyp
         runner.run_round_duel(round_arena["spec"])
 
 
+def test_a_round_writes_every_episode_when_a_transcript_dir_is_set(
+    round_arena, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EPAGO_EVAL_TRANSCRIPT_DIR", str(tmp_path / "transcripts"))
+    spec = round_arena["spec"]
+    results = round_arena["runner"].run_round_duel(spec)
+
+    jobs = list((tmp_path / "transcripts").iterdir())
+    assert len(jobs) == 1 and jobs[0].name.startswith("round000007-")
+    labels = ["king"] + [e.digest.replace(":", "_") for e in spec.entrants]
+    assert sorted(p.name for p in jobs[0].iterdir()) == sorted(
+        f"{label}.{phase}.jsonl" for label in labels for phase in ("public", "private")
+    )
+
+    def rows(label: str, phase: str) -> dict[str, dict]:
+        lines = (jobs[0] / f"{label}.{phase}.jsonl").read_text().splitlines()
+        return {r["task_id"]: r for r in map(json.loads, lines)}
+
+    king = rows("king", "public")
+    assert sorted(king) == sorted(t.task_id for t in spec.public_tasks)
+    first = next(iter(king.values()))
+    assert first["messages"][0]["role"] == "system"
+    assert any(m["role"] == "assistant" for m in first["messages"])
+    # What was written is what was scored.
+    chall = rows(labels[1], "public")
+    for task_id, diff in results[0].outcome.public_task_results:
+        assert diff == int(chall[task_id]["correct"]) - int(king[task_id]["correct"])
+
+
+def test_no_transcript_dir_means_no_transcripts(round_arena, tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("EPAGO_EVAL_TRANSCRIPT_DIR", raising=False)
+    round_arena["runner"].run_round_duel(round_arena["spec"])
+    assert not list(tmp_path.rglob("*.jsonl"))
+
+
 def test_king_ref_resolver_overrides_dir_lookup(arena) -> None:
     runner = RemoteEvalRunner(
         ref_resolver=lambda d: (_ for _ in ()).throw(KeyError("must not be called")),

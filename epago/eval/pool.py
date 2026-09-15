@@ -683,6 +683,7 @@ class GpuPool:
                             concurrency=concurrency,
                             llm_judge=judge,
                             on_result=report,
+                            transcript=(shard.label, phase),
                         )
                         spent = time.monotonic() - began
                         slot.generate_seconds += spent
