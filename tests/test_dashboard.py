@@ -247,6 +247,9 @@ def test_export_from_chain_derives_king_and_duel():
     assert d["lcb"] == pytest.approx(0.0625)
     assert d["mu_priv"] == pytest.approx(0.25)
     assert d["author_hotkey"] == "miner-1"
+    # The crowning verdict's private mean reaches the champion card and the lineage.
+    assert data["king"]["coronation_mu_priv"] == pytest.approx(0.25)
+    assert data["lineage"][-1]["mu_priv"] == pytest.approx(0.25)
 
 
 def test_export_from_chain_classifies_near_miss_and_lost_without_king():
@@ -303,6 +306,37 @@ def test_lineage_and_miners(state_dir):
     assert miners["miner-b"]["near_miss"] == 1
     assert miners["miner-b"]["arena_credit"] == pytest.approx(0.01)
     assert data["miners"][0]["hotkey"] == "miner-a"  # crowned sorts first
+
+
+def test_private_mean_is_shown_for_the_king_the_lineage_and_miners(state_dir):
+    data = export_dashboard(load_dashboard_inputs(state_dir, load_config()))
+    assert data["king"]["coronation_mu_priv"] == pytest.approx(0.02)
+    assert data["lineage"][0]["mu_priv"] == pytest.approx(0.02)
+    miners = {m["hotkey"]: m for m in data["miners"]}
+    assert miners["miner-a"]["best_mu_priv"] == pytest.approx(0.02)
+    assert miners["miner-b"]["best_mu_priv"] == pytest.approx(0.02)
+
+
+def test_a_miners_private_mean_comes_from_its_best_scoring_duel(tmp_path):
+    state = {"king": {"digest": "hf:" + "0" * 40, "author_hotkey": ""}, "arena": []}
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    (tmp_path / "audit").mkdir()
+    records = [
+        _audit_record(round_id="r1", challenger_digest="sha256:" + "c" * 64, accepted=False,
+                      lcb_pub=0.01, mu_hat_priv=0.30, verdict_at_block=1001),
+        _audit_record(round_id="r2", challenger_digest="sha256:" + "d" * 64, accepted=False,
+                      lcb_pub=0.05, mu_hat_priv=-0.04, verdict_at_block=1002),
+        _audit_record(round_id="r3", challenger_digest="sha256:" + "e" * 64, accepted=False,
+                      lcb_pub=0.02, mu_hat_priv=0.50, verdict_at_block=1003),
+    ]
+    (tmp_path / "audit" / "audit.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    data = export_dashboard(load_dashboard_inputs(tmp_path, load_config()))
+    (miner,) = data["miners"]
+    # Paired with the best LCB (0.05), not the largest mean or the latest duel.
+    assert miner["best_lcb"] == pytest.approx(0.05)
+    assert miner["best_mu_priv"] == pytest.approx(-0.04)
+    # A genesis king never won a duel, so it has no private mean to show.
+    assert data["king"]["coronation_mu_priv"] is None
 
 
 def test_kpis_and_noise_clamp(state_dir):

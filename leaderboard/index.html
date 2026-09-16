@@ -235,6 +235,7 @@
             <span style="color: var(--text3)">crowned</span><span title="{{ crownedBlockTitle }}">{{ crownedWhen }}</span>
             <span style="color: var(--text3)">reign</span><span>{{ reignAgeTxt }}</span>
             <span style="color: var(--text3)">won by</span><span><span style="color: var(--gold)">{{ corLcbTxt }}</span> <span style="color: var(--text3)">{{ corVsTxt }}</span></span>
+            <span style="color: var(--text3)" title="challenger minus king on the private tasks — must be above zero">private μ</span><span><span style="color: {{ corMuColor }}">{{ corMuTxt }}</span> <span style="color: var(--text3)">{{ corMuNote }}</span></span>
             <span style="color: var(--text3)">next bar</span><span><span style="color: var(--gold)">{{ deltaNextTxt }}</span> <span style="color: var(--text3)">to take the crown</span></span>
           </div>
           <div style="border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--text2)">
@@ -263,6 +264,7 @@
               <span style="display: flex; gap: 6px; align-items: baseline"><span style="color: var(--gold); font-size: 12px">♛{{ c.n }}</span><span style="color: var(--text2); font-size: 11px; overflow-wrap: anywhere">{{ c.hotkey }}</span></span>
               <span style="font-size: 14px">{{ c.pct }} <span style="color: var(--text3); font-size: 11px">after crowning</span></span>
               <span style="font-size: 11px; color: var(--text2)">won by <span style="color: var(--gold)">{{ c.lcbTxt }}</span> vs {{ c.deltaTxt }} req.</span>
+              <span style="font-size: 11px; color: var(--text2)">private μ <span style="color: var(--gold)">{{ c.muTxt }}</span></span>
               <span style="font-size: 11px; color: var(--text3)" title="{{ c.blockTitle }}">{{ c.when }} · <button onclick="{{ c.copyFn }}" title="{{ c.digest }} — click to copy" style="background: none; border: none; padding: 0; font: inherit; font-size: 11px; cursor: pointer; color: var(--text3); text-decoration: underline dotted; text-underline-offset: 2px">{{ c.digest8 }} <span class="{{ c.glyphClass }}" style="font-size: 10px; color: {{ c.glyphColor }}">{{ c.glyph }}</span></button></span>
             </div>
           </div>
@@ -424,7 +426,7 @@
         <span style="font-size: 11px; color: var(--text3)">ranked by crowns won, then near misses, then best score — losing narrowly is paid, not punished</span>
       </div>
       <div style="border: 1px solid var(--line); background: var(--panel); overflow-x: auto">
-        <sc-raw-table style="width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 780px">
+        <sc-raw-table style="width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 860px">
           <sc-raw-thead>
             <sc-raw-tr style="color: var(--text3); font-size: 11px; letter-spacing: .06em; text-align: left">
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">#</sc-raw-th>
@@ -433,6 +435,7 @@
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">NEAR MISSES</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">ATTEMPTS</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">BEST SCORE lcb</sc-raw-th>
+              <sc-raw-th scope="col" title="challenger minus king on the private tasks, from the same duel as the best score — must be above zero" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">PRIVATE μ</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">ARENA CREDIT</sc-raw-th>
               <sc-raw-th scope="col" style="padding: var(--rpad) 12px; font-weight: 400; border-bottom: 1px solid var(--line); text-align: right">LAST DUEL</sc-raw-th>
             </sc-raw-tr>
@@ -444,6 +447,7 @@
                 <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: {{ m.nmColor }}">{{ m.nearMiss }}</sc-raw-td>
                 <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: var(--text2)">{{ m.attempts }}</sc-raw-td>
                 <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: var(--text2)">{{ m.bestLcbTxt }}</sc-raw-td>
+                <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: {{ m.muPrivColor }}">{{ m.muPrivTxt }}</sc-raw-td>
                 <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: {{ m.creditColor }}">{{ m.creditTxt }}</sc-raw-td>
                 <sc-raw-td style="padding: var(--rpad) 12px; text-align: right; color: var(--text3); white-space: nowrap" title="{{ m.blockTitle }}">{{ m.when }}</sc-raw-td>
               </sc-raw-tr></sc-for></sc-raw-tbody>
@@ -850,6 +854,8 @@ class Component extends DCLogic {
       nearMiss: m.near_miss, nmColor: m.near_miss > 0 ? 'var(--blue)' : 'var(--text3)',
       attempts: m.attempts,
       bestLcbTxt: this.f4(m.best_lcb),
+      muPrivTxt: m.best_mu_priv != null ? this.f4(m.best_mu_priv) : '—',
+      muPrivColor: m.best_mu_priv > 0 ? 'var(--text2)' : 'var(--text3)',
       creditTxt: m.arena_credit > 0 ? this.f4(m.arena_credit) : '\u2014',
       creditColor: m.arena_credit > 0 ? 'var(--blue)' : 'var(--text3)',
       when: this.agoTxt(now, m.last_block), blockTitle: 'block ' + this.fmtInt(m.last_block)
@@ -948,6 +954,7 @@ class Component extends DCLogic {
       digest: c.digest, digest8: this.short(c.digest), copyFn: this.copyFn(c.digest, 'lin' + i),
       ...this.copyBits(c.digest, 'lin' + i),
       pct: emaAt(c.round), lcbTxt: this.f4(c.lcb), deltaTxt: this.f4(c.delta),
+      muTxt: c.mu_priv != null ? this.f4(c.mu_priv) : '—',
       when: this.agoTxt(now, c.block), blockTitle: 'block ' + this.fmtInt(c.block),
       borderColor: i === (d.lineage.length - 1) ? 'var(--gold-line)' : 'var(--line)'
     }));
@@ -997,6 +1004,10 @@ class Component extends DCLogic {
       reignAgeTxt: this.durTxt(k.reign_age_blocks) + ' \u00B7 ' + this.fmtInt(k.reign_age_blocks) + ' blocks',
       corLcbTxt: crowned ? this.f4(k.coronation_lcb) : '',
       corVsTxt: crowned ? 'vs ' + this.f4(corDelta) + ' required' : 'genesis model \u00B7 no duel',
+      // The second half of the crown rule: the private mean only has to be above zero.
+      corMuTxt: crowned && k.coronation_mu_priv != null ? this.f4(k.coronation_mu_priv) : '\u2014',
+      corMuColor: crowned && k.coronation_mu_priv > 0 ? 'var(--gold)' : 'var(--text3)',
+      corMuNote: crowned && k.coronation_mu_priv != null ? 'above 0 required' : '',
       deltaNextTxt: kp.delta_next != null ? this.f4(kp.delta_next) : '\u2014',
       kingShareTxt: this.pct2(em.king),
       bonusTxt: em.bonus_factor != null ? '\u00D7' + em.bonus_factor.toFixed(3) : '\u2014',

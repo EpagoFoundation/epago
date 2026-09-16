@@ -121,7 +121,7 @@ def export_dashboard(inputs: DashboardInputs) -> dict[str, Any]:
         "schema": DASHBOARD_SCHEMA,
         "chain": {"name": cfg.chain.name, "netuid": cfg.chain.netuid, "network": cfg.chain.network},
         "generated_at_block": block,
-        "king": _king(state, block, cfg, acc_history),
+        "king": _king(state, block, cfg, acc_history, records),
         "kpis": _kpis(state, records, block, cfg, acc_history),
         "lineage": _lineage(records),
         "accuracy_series": acc_history[-MAX_SERIES_POINTS:],
@@ -193,11 +193,22 @@ def _latest_block(state: dict, records: list[dict]) -> int:
     return max(candidates)
 
 
-def _king(state: dict, block: int, cfg: EpagoConfig, acc_history: list[dict]) -> dict | None:
+def _king(
+    state: dict, block: int, cfg: EpagoConfig, acc_history: list[dict], records: list[dict]
+) -> dict | None:
     king = state.get("king")
     if not king:
         return None
     reign_age = max(block - king.get("reign_started_block", block), 0)
+    # The private-half mean from the verdict that crowned it. With several
+    # accepting validators, the lowest — the same conservative pick as the LCB.
+    # None for a genesis king, which never won a duel.
+    digest = king.get("digest", "")
+    won = [
+        r.get("mu_hat_priv", 0.0)
+        for r in records
+        if r.get("accepted") and r.get("challenger_digest") == digest
+    ]
     return {
         "repo": king.get("repo", ""),
         "digest": king.get("digest", ""),
@@ -207,6 +218,7 @@ def _king(state: dict, block: int, cfg: EpagoConfig, acc_history: list[dict]) ->
         "reign_age_blocks": reign_age,
         "acc_ema": acc_history[-1]["ema"] if acc_history else None,
         "coronation_lcb": king.get("coronation_lcb", 0.0),
+        "coronation_mu_priv": min(won) if won else None,
         "reign_decay": reign_decay_factor(reign_age, cfg.emissions.reign_halflife_blocks),
     }
 
@@ -267,6 +279,7 @@ def _lineage(records: list[dict]) -> list[dict]:
                 "block": r.get("verdict_at_block", 0),
                 "lcb": r.get("lcb_pub", 0.0),
                 "delta": r.get("delta_threshold", 0.0),
+                "mu_priv": r.get("mu_hat_priv", 0.0),
                 "round": (r.get("extra") or {}).get("round", 0),
                 "self_dethrone": author == prev_author and prev_author is not None,
             }
@@ -430,7 +443,14 @@ def _miners(records: list[dict], state: dict) -> list[dict]:
             continue
         a = by_author.setdefault(
             r.get("author_hotkey", "?"),
-            {"attempts": 0, "accepted": 0, "near_miss": 0, "best_lcb": None, "last_block": 0},
+            {
+                "attempts": 0,
+                "accepted": 0,
+                "near_miss": 0,
+                "best_lcb": None,
+                "best_mu_priv": None,
+                "last_block": 0,
+            },
         )
         a["attempts"] += 1
         lcb, delta = r.get("lcb_pub", 0.0), r.get("delta_threshold", 0.0)
@@ -438,7 +458,11 @@ def _miners(records: list[dict], state: dict) -> list[dict]:
             a["accepted"] += 1
         elif 0.0 < lcb <= delta:
             a["near_miss"] += 1
-        a["best_lcb"] = lcb if a["best_lcb"] is None else max(a["best_lcb"], lcb)
+        # The private mean travels with the best score: both come from the
+        # same duel, so the row never pairs one duel's LCB with another's mean.
+        if a["best_lcb"] is None or lcb > a["best_lcb"]:
+            a["best_lcb"] = lcb
+            a["best_mu_priv"] = r.get("mu_hat_priv", 0.0)
         a["last_block"] = max(a["last_block"], r.get("verdict_at_block", 0))
 
     arena_credit: dict[str, float] = {}
@@ -458,6 +482,7 @@ def _miners(records: list[dict], state: dict) -> list[dict]:
                 "accepted": a["accepted"],
                 "near_miss": a["near_miss"],
                 "best_lcb": a["best_lcb"] or 0.0,
+                "best_mu_priv": a["best_mu_priv"],
                 "last_block": a["last_block"],
                 "arena_credit": arena_credit.get(hotkey, 0.0),
             }
