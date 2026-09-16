@@ -3,7 +3,7 @@
 A validator runs one of these per GPU box. The invariants that matter:
 
 * exactly one GPU job at a time — a single asyncio.Lock guards the GPU, and a
-  second POST /duel (or /calibrate, /probes) while one is running gets 409
+  second POST /duel (or /round, /calibrate, /probes) while one is running gets 409
   instead of queueing, so the caller (the validator scheduler) owns queue
   policy. One *job* still means one job when the box has eight cards: the job
   itself fans out across them (see :mod:`epago.eval.pool`);
@@ -40,11 +40,12 @@ from fastapi.responses import StreamingResponse
 
 from epago.core.types import ModelRef
 from epago.eval.backend import ModelBackend
-from epago.eval.duel import run_calibration_duel, run_duel
+from epago.eval.duel import run_calibration_duel, run_duel, run_round_duel
 from epago.eval.harness import harness_digest
 from epago.eval.judge import LlmJudge
 from epago.eval.remote import (
     DuelRequest,
+    RoundRequest,
     outcome_to_wire,
     ref_from_wire,
     task_from_wire,
@@ -187,6 +188,47 @@ def create_app(
                         evict_all_but(king_key)
             publish({"phase": "done", "accepted": outcome.accepted})
             return outcome_to_wire(outcome)
+
+    @app.post("/round")
+    async def round_duel(request: Request) -> dict:
+        authorize(request)
+        req: RoundRequest = parse_body(await request.json(), RoundRequest.from_wire)
+        if duel_lock.locked():
+            raise HTTPException(status_code=409, detail="a duel is already running")
+        async with duel_lock:
+            loop = asyncio.get_running_loop()
+
+            def on_progress(event: dict) -> None:
+                loop.call_soon_threadsafe(publish, event)
+
+            king_dir = await asyncio.to_thread(materialize_fn, req.king, cache)
+            challenger_dirs = [
+                Path(await asyncio.to_thread(materialize_fn, e.challenger, cache))
+                for e in req.entrants
+            ]
+            spec = req.to_spec(Path(king_dir), challenger_dirs)
+            try:
+                results = await asyncio.to_thread(
+                    run_round_duel,
+                    spec,
+                    env,
+                    cached_factory,
+                    llm_judge,
+                    on_progress=on_progress,
+                    pool=pool,
+                )
+            finally:
+                # Without a pool the round runner closes every engine it opens,
+                # the king's included, so nothing is left to keep resident.
+                if pool is None:
+                    evict_all_but("")
+            publish({"phase": "done", "round": req.round})
+            return {
+                "results": [
+                    {"digest": r.entrant.digest, "outcome": outcome_to_wire(r.outcome)}
+                    for r in results
+                ]
+            }
 
     @app.post("/calibrate")
     async def calibrate(request: Request) -> dict:

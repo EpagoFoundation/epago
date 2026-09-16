@@ -28,7 +28,7 @@ from epago.core.emissions import (
     phase_b_active,
     reign_decay_factor,
 )
-from epago.core.stats import noise_floor_from_calibration
+from epago.core.stats import adaptive_delta, noise_floor_from_calibration
 from epago.core.types import VerdictDecision
 
 DASHBOARD_SCHEMA = "epd1"
@@ -115,15 +115,16 @@ def export_dashboard(inputs: DashboardInputs) -> dict[str, Any]:
     state, records, cfg = inputs.state, inputs.audit_records, inputs.cfg
     records = sorted(records, key=lambda r: (r.get("verdict_at_block", 0), r.get("round_id", "")))
     block = inputs.current_block or _latest_block(state, records)
+    acc_history = _accuracy_history(state)
 
     return {
         "schema": DASHBOARD_SCHEMA,
         "chain": {"name": cfg.chain.name, "netuid": cfg.chain.netuid, "network": cfg.chain.network},
         "generated_at_block": block,
-        "king": _king(state, block, cfg),
-        "kpis": _kpis(state, records, block, cfg),
+        "king": _king(state, block, cfg, acc_history, records),
+        "kpis": _kpis(state, records, block, cfg, acc_history),
         "lineage": _lineage(records),
-        "accuracy_series": _accuracy_series(records),
+        "accuracy_series": acc_history[-MAX_SERIES_POINTS:],
         "duels": _duel_rows(records, state),
         "rounds": _rounds(records),
         "miners": _miners(records, state),
@@ -192,11 +193,22 @@ def _latest_block(state: dict, records: list[dict]) -> int:
     return max(candidates)
 
 
-def _king(state: dict, block: int, cfg: EpagoConfig) -> dict | None:
+def _king(
+    state: dict, block: int, cfg: EpagoConfig, acc_history: list[dict], records: list[dict]
+) -> dict | None:
     king = state.get("king")
     if not king:
         return None
     reign_age = max(block - king.get("reign_started_block", block), 0)
+    # The private-half mean from the verdict that crowned it. With several
+    # accepting validators, the lowest — the same conservative pick as the LCB.
+    # None for a genesis king, which never won a duel.
+    digest = king.get("digest", "")
+    won = [
+        r.get("mu_hat_priv", 0.0)
+        for r in records
+        if r.get("accepted") and r.get("challenger_digest") == digest
+    ]
     return {
         "repo": king.get("repo", ""),
         "digest": king.get("digest", ""),
@@ -204,20 +216,24 @@ def _king(state: dict, block: int, cfg: EpagoConfig) -> dict | None:
         "crowned_block": king.get("crowned_block", 0),
         "reign_started_block": king.get("reign_started_block", 0),
         "reign_age_blocks": reign_age,
-        "acc_ema": state.get("king_acc_ema", 0.0),
+        "acc_ema": acc_history[-1]["ema"] if acc_history else None,
         "coronation_lcb": king.get("coronation_lcb", 0.0),
+        "coronation_mu_priv": min(won) if won else None,
         "reign_decay": reign_decay_factor(reign_age, cfg.emissions.reign_halflife_blocks),
     }
 
 
-def _kpis(state: dict, records: list[dict], block: int, cfg: EpagoConfig) -> dict:
+def _kpis(state: dict, records: list[dict], block: int, cfg: EpagoConfig, acc_history: list[dict]) -> dict:
     duels = [r for r in records if not r.get("round_id", "").startswith("calib-")]
     accepted = [r for r in duels if r.get("accepted")]
-    prev_ema = duels[-2]["king_acc_ema"] if len(duels) >= 2 else None
     noise = noise_floor_from_calibration(state.get("noise_floor_samples", []))
     return {
-        "king_acc_ema": state.get("king_acc_ema", 0.0),
-        "king_acc_ema_prev": prev_ema,
+        # None until a round is scored: the validator's 0.5 stand-in is not a
+        # measurement and is never shown as one.
+        "king_acc_ema": acc_history[-1]["ema"] if acc_history else None,
+        "king_acc_ema_prev": acc_history[-2]["ema"] if len(acc_history) >= 2 else None,
+        "king_acc_genesis": acc_history[0]["ema"] if acc_history else None,
+        "king_acc_rounds": len(acc_history),
         "duels_total": len(duels),
         "duels_accepted": len(accepted),
         "accept_rate": len(accepted) / len(duels) if duels else 0.0,
@@ -230,6 +246,11 @@ def _kpis(state: dict, records: list[dict], block: int, cfg: EpagoConfig) -> dic
         "last_round_run": state.get("last_round_run", 0),
         "noise_floor": noise,
         "delta_clamp": constants.DELTA_NOISE_MULTIPLIER * noise,
+        # The bar the next challenger has to clear: the headroom term from the
+        # champion's measured accuracy (the validator's 0.5 stand-in before any
+        # round), clamped above noise. The clamp alone understates it whenever the
+        # king is weak enough for the headroom term to bind.
+        "delta_next": adaptive_delta(acc_history[-1]["ema"] if acc_history else 0.5, noise),
         "phase": "live"
         if phase_b_active(
             state.get("clean_duels", 0),
@@ -258,6 +279,8 @@ def _lineage(records: list[dict]) -> list[dict]:
                 "block": r.get("verdict_at_block", 0),
                 "lcb": r.get("lcb_pub", 0.0),
                 "delta": r.get("delta_threshold", 0.0),
+                "mu_priv": r.get("mu_hat_priv", 0.0),
+                "round": (r.get("extra") or {}).get("round", 0),
                 "self_dethrone": author == prev_author and prev_author is not None,
             }
         )
@@ -265,17 +288,28 @@ def _lineage(records: list[dict]) -> list[dict]:
     return out[-MAX_SERIES_POINTS:]
 
 
-def _accuracy_series(records: list[dict]) -> list[dict]:
-    pts = [
-        {
-            "block": r.get("verdict_at_block", 0),
-            "ema": r.get("king_acc_ema", 0.0),
-            "coronation": bool(r.get("accepted")),
-        }
-        for r in records
-        if not r.get("round_id", "").startswith("calib-")
-    ]
-    return pts[-MAX_SERIES_POINTS:]
+def _accuracy_history(state: dict) -> list[dict]:
+    """Champion accuracy after each scored round, oldest first.
+
+    Built from the validator's own per-round measurements
+    (``king_acc_history``), not from the audit records: a duel record carries
+    the EMA its floor was computed from, which is the value from *before* its
+    round. Plotting that shows every round one step late, and the first one as
+    the 0.5 stand-in a new validator starts from.
+    """
+    out: list[dict] = []
+    for h in state.get("king_acc_history") or []:
+        rnd = int(h.get("round") or 0)
+        out.append(
+            {
+                "round": rnd,
+                "block": int(h.get("block") or 0),
+                "observed": float(h.get("observed") or 0.0),
+                "ema": float(h.get("ema") or 0.0),
+                "coronation": bool(h.get("coronation")),
+            }
+        )
+    return out
 
 
 def _rounds(records: list[dict]) -> list[dict]:
@@ -409,7 +443,14 @@ def _miners(records: list[dict], state: dict) -> list[dict]:
             continue
         a = by_author.setdefault(
             r.get("author_hotkey", "?"),
-            {"attempts": 0, "accepted": 0, "near_miss": 0, "best_lcb": None, "last_block": 0},
+            {
+                "attempts": 0,
+                "accepted": 0,
+                "near_miss": 0,
+                "best_lcb": None,
+                "best_mu_priv": None,
+                "last_block": 0,
+            },
         )
         a["attempts"] += 1
         lcb, delta = r.get("lcb_pub", 0.0), r.get("delta_threshold", 0.0)
@@ -417,7 +458,11 @@ def _miners(records: list[dict], state: dict) -> list[dict]:
             a["accepted"] += 1
         elif 0.0 < lcb <= delta:
             a["near_miss"] += 1
-        a["best_lcb"] = lcb if a["best_lcb"] is None else max(a["best_lcb"], lcb)
+        # The private mean travels with the best score: both come from the
+        # same duel, so the row never pairs one duel's LCB with another's mean.
+        if a["best_lcb"] is None or lcb > a["best_lcb"]:
+            a["best_lcb"] = lcb
+            a["best_mu_priv"] = r.get("mu_hat_priv", 0.0)
         a["last_block"] = max(a["last_block"], r.get("verdict_at_block", 0))
 
     arena_credit: dict[str, float] = {}
@@ -437,6 +482,7 @@ def _miners(records: list[dict], state: dict) -> list[dict]:
                 "accepted": a["accepted"],
                 "near_miss": a["near_miss"],
                 "best_lcb": a["best_lcb"] or 0.0,
+                "best_mu_priv": a["best_mu_priv"],
                 "last_block": a["last_block"],
                 "arena_credit": arena_credit.get(hotkey, 0.0),
             }

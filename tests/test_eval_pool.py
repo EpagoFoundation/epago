@@ -636,6 +636,20 @@ def test_pooled_round_sweeps_the_king_once_and_each_entrant_once() -> None:
     assert sorted(loaded) == sorted([str(KING_DIR)] + [str(d) for d in dirs])
 
 
+def test_a_round_on_two_card_groups_uses_both_and_sweeps_the_king_once() -> None:
+    pub, priv = make_tasks("pub", 12), make_tasks("prv", 12)
+    dirs = [Path("/models/e0"), Path("/models/e1")]
+    tables = {KING_DIR: knower(set()), **{d: knower(set()) for d in dirs}}
+    factory = Factory(tables)
+    pool = GpuPool(["0,1,2,3", "4,5,6,7"], engine_factory=factory)
+    run_round_duel(
+        round_spec(pub, priv, dirs), FakeEnv(), Factory(tables).backend_factory, pool=pool
+    )
+    loaded = [m for m, _ in factory.loads]
+    assert loaded.count(str(KING_DIR)) == 1
+    assert {device for _, device in factory.loads} == {"0,1,2,3", "4,5,6,7"}
+
+
 def test_a_broken_entrant_forfeits_and_the_round_continues() -> None:
     pub, priv = make_tasks("pub", 12), make_tasks("prv", 12)
     dirs = [Path("/models/ok"), Path("/models/broken")]
@@ -785,6 +799,55 @@ def test_place_engines_reserves_a_card_when_the_judge_is_local(monkeypatch) -> N
     assert pool is not None
     assert pool.devices == ("0", "1", "2")  # the judge's card is not the pool's
     assert judge_factory is not base
+
+
+def test_replica_cards_reads_the_tensor_parallel_size(monkeypatch) -> None:
+    from epago.eval.pool import replica_cards
+
+    monkeypatch.delenv("EPAGO_VLLM_TP", raising=False)
+    assert replica_cards() == 1
+    monkeypatch.setenv("EPAGO_VLLM_TP", "4")
+    assert replica_cards() == 4
+    monkeypatch.setenv("EPAGO_VLLM_TP", "four")
+    with pytest.raises(ValueError):
+        replica_cards()
+
+
+def test_replica_slots_groups_cards_in_order() -> None:
+    from epago.eval.pool import replica_slots
+
+    cards = tuple(str(i) for i in range(8))
+    assert replica_slots(cards, 1) == cards
+    assert replica_slots(cards, 4) == ("0,1,2,3", "4,5,6,7")
+    assert replica_slots(("GPU-a", "GPU-b"), 2) == ("GPU-a,GPU-b",)
+    # Fewer cards than one replica needs: no slots, so no pool.
+    assert replica_slots(("0",), 4) == ()
+    with pytest.raises(ValueError):
+        replica_slots(cards[:6], 4)
+
+
+def test_place_engines_pools_card_groups_for_a_split_model(monkeypatch) -> None:
+    from epago.eval.pool import place_engines
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    monkeypatch.delenv("EPAGO_EVAL_GPUS", raising=False)
+    monkeypatch.setenv("EPAGO_VLLM_TP", "4")
+    base = Factory({}).backend_factory
+    pool, probe_factory, _ = place_engines(base)
+    assert pool is not None and pool.devices == ("0,1,2,3", "4,5,6,7")
+    assert probe_factory == pool.borrow
+
+
+def test_a_split_model_on_one_group_of_cards_keeps_the_single_engine(monkeypatch) -> None:
+    from epago.eval.pool import place_engines
+
+    monkeypatch.setenv("EPAGO_VLLM_TP", "4")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.delenv("EPAGO_EVAL_GPUS", raising=False)
+    base = Factory({}).backend_factory
+    assert place_engines(base) == (None, base, base)
+    monkeypatch.setenv("EPAGO_EVAL_GPUS", "1")
+    assert place_engines(base) == (None, base, base)
 
 
 def test_needs_local_judge_engine(monkeypatch) -> None:

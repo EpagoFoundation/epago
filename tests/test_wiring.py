@@ -90,6 +90,126 @@ def test_managed_pool_persists_across_restarts(tmp_path, corpus_path, cfg, monke
     assert again.digest == digest
 
 
+def _audited_rows(tmp_path, corpus_path, cfg) -> list[dict]:
+    """Rows for an audited pool file, minted over the fixture corpus."""
+    from epago.environment.corpus import SqliteCorpus
+    from epago.taskgen.private_pool import _task_to_dict
+
+    minted = ManagedPrivatePool(tmp_path / "mint", SqliteCorpus(corpus_path), cfg)
+    return [_task_to_dict(t) for t in minted._pool.tasks]
+
+
+def _write_rows(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_managed_pool_refuses_a_missing_audited_dir(tmp_path, corpus_path, cfg, monkeypatch):
+    _small_pool(monkeypatch)
+    from epago.environment.corpus import SqliteCorpus
+
+    monkeypatch.setenv("EPAGO_AUDITED_POOL_DIR", str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="not a directory"):
+        ManagedPrivatePool(tmp_path / "state", SqliteCorpus(corpus_path), cfg)
+    assert not (tmp_path / "state" / "private_pool" / "pool_state.json").exists()
+
+
+def test_managed_pool_refuses_an_audited_dir_with_no_unused_file(
+    tmp_path, corpus_path, cfg, monkeypatch
+):
+    _small_pool(monkeypatch)
+    from epago.environment.corpus import SqliteCorpus
+
+    audited = tmp_path / "audited"
+    audited.mkdir()
+    (audited / "pool-epoch001.jsonl.used").write_text("")
+    monkeypatch.setenv("EPAGO_AUDITED_POOL_DIR", str(audited))
+    with pytest.raises(RuntimeError, match="no unused audited pool"):
+        ManagedPrivatePool(tmp_path / "state", SqliteCorpus(corpus_path), cfg)
+
+
+def test_managed_pool_uses_an_audited_file_once(tmp_path, corpus_path, cfg, monkeypatch):
+    _small_pool(monkeypatch)
+    from epago.environment.corpus import SqliteCorpus
+
+    monkeypatch.delenv("EPAGO_AUDITED_POOL_DIR", raising=False)
+    rows = _audited_rows(tmp_path, corpus_path, cfg)
+    audited = tmp_path / "audited"
+    audited.mkdir()
+    _write_rows(audited / "pool-epoch001.jsonl", rows)
+    monkeypatch.setenv("EPAGO_AUDITED_POOL_DIR", str(audited))
+
+    pool = ManagedPrivatePool(tmp_path / "state", SqliteCorpus(corpus_path), cfg)
+    assert sorted(t.task_id for t in pool._pool.tasks) == sorted(r["task_id"] for r in rows)
+    assert (audited / "pool-epoch001.jsonl.used").exists()
+
+
+def test_managed_pool_refuses_audited_tasks_citing_papers_the_corpus_lacks(
+    tmp_path, corpus_path, cfg, monkeypatch
+):
+    _small_pool(monkeypatch)
+    from epago.environment.corpus import SqliteCorpus
+
+    monkeypatch.delenv("EPAGO_AUDITED_POOL_DIR", raising=False)
+    rows = _audited_rows(tmp_path, corpus_path, cfg)
+    rows[0]["evidence_doc_ids"] = ["ing-0000000000000000"]
+    audited = tmp_path / "audited"
+    audited.mkdir()
+    _write_rows(audited / "pool-epoch001.jsonl", rows)
+    monkeypatch.setenv("EPAGO_AUDITED_POOL_DIR", str(audited))
+
+    with pytest.raises(ValueError, match="papers the corpus does not have"):
+        ManagedPrivatePool(tmp_path / "state", SqliteCorpus(corpus_path), cfg)
+    assert (audited / "pool-epoch001.jsonl").exists()  # refused, so not marked used
+
+
+def test_managed_pool_refuses_a_saved_pool_citing_papers_the_corpus_lacks(
+    tmp_path, corpus_path, cfg, monkeypatch
+):
+    _small_pool(monkeypatch)
+    from dataclasses import replace
+
+    from epago.environment.corpus import SqliteCorpus
+    from epago.taskgen.private_pool import PrivatePool
+
+    monkeypatch.delenv("EPAGO_AUDITED_POOL_DIR", raising=False)
+    corpus = SqliteCorpus(corpus_path)
+    saved = ManagedPrivatePool(tmp_path, corpus, cfg)._pool
+    first = replace(saved.tasks[0], evidence_doc_ids=("ing-0000000000000000",))
+    PrivatePool(
+        epoch=saved.epoch,
+        created_block=saved.created_block,
+        tasks=(first,) + saved.tasks[1:],
+        storage_path=saved.storage_path,
+    ).save()
+
+    with pytest.raises(ValueError, match="saved private pool epoch 1"):
+        ManagedPrivatePool(tmp_path, corpus, cfg)
+
+
+def test_managed_pool_drops_feed_tasks_whose_papers_are_not_in_the_corpus(
+    tmp_path, corpus_path, cfg, monkeypatch
+):
+    _small_pool(monkeypatch)
+    from dataclasses import replace
+
+    import epago.taskgen.ingest as ingest
+    from epago.environment.corpus import SqliteCorpus
+
+    monkeypatch.delenv("EPAGO_AUDITED_POOL_DIR", raising=False)
+    corpus = SqliteCorpus(corpus_path)
+    minted = ManagedPrivatePool(tmp_path / "mint", corpus, cfg)._pool.tasks
+    feed_tasks = [
+        replace(t, task_id=f"feed-{i}", evidence_doc_ids=("ing-0000000000000000",))
+        for i, t in enumerate(minted)
+    ]
+    monkeypatch.setattr(ManagedPrivatePool, "_make_source", lambda self, seed: object())
+    monkeypatch.setattr(ingest, "build_private_tasks", lambda *args, **kwargs: feed_tasks)
+
+    pool = ManagedPrivatePool(tmp_path / "state", corpus, cfg)
+    ids = {t.task_id for t in pool._pool.tasks}
+    assert ids and not any(i.startswith("feed-") for i in ids)
+
+
 def test_build_production_deps_composes_without_gpu_extras(
     tmp_path, corpus_path, cfg, monkeypatch
 ):

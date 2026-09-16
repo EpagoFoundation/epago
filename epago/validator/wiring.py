@@ -94,6 +94,12 @@ class ManagedPrivatePool:
             # round could ever run — a fresh box was permanently unable to duel.
             self._pool = self._build_pool(PrivatePool, epoch=1, created_block=created_block)
             self._pool.save(self._pool_dir)
+        else:
+            # A saved pool grades duels exactly as a new one would, so it gets
+            # the same check a new pool gets when it is built.
+            self._require_papers_in_corpus(
+                self._pool.tasks, f"saved private pool epoch {self._pool.epoch}"
+            )
 
     # -- PrivatePoolLike -------------------------------------------------------
 
@@ -190,6 +196,16 @@ class ManagedPrivatePool:
                 )
             except Exception as exc:  # noqa: BLE001 - ingest is best-effort supply
                 logger.warning("private feed failed, falling back to corpus: %s", exc)
+            missing = self._missing_papers(tasks)
+            if missing:
+                # Feed papers exist only in memory while the tasks are minted.
+                # The corpus duels search never holds them, so no model could
+                # research these tasks.
+                logger.warning(
+                    "private feed tasks cite %d papers outside the corpus, falling back to corpus",
+                    len(missing),
+                )
+                tasks = []
         if not tasks:
             from epago.core.types import TaskOrigin
             from epago.taskgen.generator import generate_tasks
@@ -204,6 +220,7 @@ class ManagedPrivatePool:
                     king_probe=None,
                 )
             ]
+        self._require_papers_in_corpus(tasks, f"private pool epoch {epoch}")
         return pool_cls(
             epoch=epoch,
             created_block=created_block,
@@ -219,9 +236,10 @@ class ManagedPrivatePool:
         re-serves tasks a previous epoch already published -- republishing a
         retired pool would hand miners a set they have already seen in full.
 
-        Absence is not an error. With no directory configured the pool falls
-        back to the generator exactly as before, which is what every existing
-        deployment does.
+        An unset directory is not an error: the pool falls back to the feed or
+        the generator exactly as before. A set one says what the private half
+        measures, so a missing directory, or one with no unused file, raises
+        instead of quietly building a different kind of pool.
         """
         from epago.core.types import TaskOrigin
 
@@ -230,8 +248,10 @@ class ManagedPrivatePool:
             return []
         pool_dir = Path(directory)
         if not pool_dir.is_dir():
-            logger.warning("EPAGO_AUDITED_POOL_DIR is not a directory: %s", directory)
-            return []
+            raise RuntimeError(
+                f"EPAGO_AUDITED_POOL_DIR is not a directory: {directory}; refusing to "
+                "build the private pool from another source"
+            )
 
         for path in sorted(pool_dir.glob("*.jsonl")):
             try:
@@ -255,11 +275,33 @@ class ManagedPrivatePool:
                 _restamp_private(_task_from_row(row), TaskOrigin)
                 for row in rows[: constants.N_PRIV_TASKS]
             ]
+            # Checked before the file is marked used, so a refused file stays
+            # available once the corpus that matches it is in place.
+            self._require_papers_in_corpus(tasks, f"audited pool {path.name}")
             # Consumed, not deleted: the file is still needed to publish the
             # pool at rotation and to answer an auditor later.
             path.rename(path.with_suffix(".jsonl.used"))
             return tasks
-        return []
+        raise RuntimeError(
+            f"no unused audited pool file with at least {constants.N_PRIV_TASKS} tasks "
+            f"in {directory}; refusing to build the private pool from another source"
+        )
+
+    def _missing_papers(self, tasks) -> list[str]:
+        """Evidence papers the pinned corpus does not have, sorted."""
+        return sorted(
+            {d for t in tasks for d in t.evidence_doc_ids if self._corpus.get(d) is None}
+        )
+
+    def _require_papers_in_corpus(self, tasks, what: str) -> None:
+        """Refuse tasks whose papers the corpus cannot serve: nothing can
+        research a task whose evidence search and browse never return."""
+        missing = self._missing_papers(tasks)
+        if missing:
+            raise ValueError(
+                f"{what} cites {len(missing)} papers the corpus does not have "
+                f"(first: {missing[0]})"
+            )
 
     def _make_source(self, seed: int):
         """The private-pool document feed, preferring the automated fresh source.
@@ -377,9 +419,9 @@ def build_production_deps(
             ref_resolver=ref_index.resolve,
         )
         run_duel_fn = runner.run_duel
-        # The remote eval server has no batch endpoint; the service falls back
-        # to one duel per entrant over the round's shared exam.
-        run_round_duel_fn = None
+        # The whole round goes to the server in one call, so the king answers
+        # the round's exam once instead of once per entrant.
+        run_round_duel_fn = runner.run_round_duel
         run_calibration_fn = runner.run_calibration_duel
         run_probes_fn = runner.run_probes
         materialize_dep = registering_materialize
