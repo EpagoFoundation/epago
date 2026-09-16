@@ -155,10 +155,12 @@ aims for the 0.45–0.65 band) and the validator's calibrated floor is 0.030:
 
 - headroom term: `0.05 × (1 − 0.55) = 0.0225`
 - noise clamp: `DELTA_NOISE_MULTIPLIER × 0.030`
-- with the shipped multiplier the noise clamp binds, so plan against `delta ≈ 0.03` or
-  higher rather than against the headroom term. Check the live value on the dashboard
-  (`delta_clamp`) instead of assuming a static fallback — it moves with the reigning
-  king's hardware, and it moves the bar you have to clear.
+- with the shipped multiplier the noise clamp binds here, so plan against `delta ≈ 0.03`
+  or higher rather than against the headroom term. A weaker king flips that: at an
+  accuracy EMA of 0.20 the headroom term is `0.04` and binds instead. Check the live
+  bar on the dashboard (`delta_next`, the champion card's "next bar") instead of
+  assuming a static fallback — it moves with the king's measured accuracy and with the
+  validator's hardware noise.
 
 Now suppose on the 800 public tasks you solve 30 tasks the king misses and the
 king solves 6 you miss (164 ties): mean difference `μ̂ = 24/200 = 0.12`. The

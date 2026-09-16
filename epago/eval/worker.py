@@ -159,7 +159,8 @@ class WorkerBackend:
         env = dict(os.environ)
         # The child's value is resolved against the *physical* enumeration, so
         # this must be the identifier resolve_devices() forwarded, never a
-        # re-derived index. Everything else (determinism flags, memory caps) is
+        # re-derived index. For a model split over several cards it is a whole
+        # group ("0,1,2,3"), which CUDA takes the same way. Everything else (determinism flags, memory caps) is
         # inherited unchanged: a replica is configured exactly like the
         # single-GPU engine it stands in for.
         env["CUDA_VISIBLE_DEVICES"] = self.device

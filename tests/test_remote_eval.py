@@ -17,15 +17,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from epago.core.types import DuelSpec, ModelRef, Task, TaskOrigin
+from epago.core.types import DuelSpec, Entrant, ModelRef, RoundDuelSpec, Task, TaskOrigin
 from epago.eval.backend import ModelBackend, ScriptedBackend
-from epago.eval.duel import run_calibration_duel, run_duel
+from epago.eval.duel import run_calibration_duel, run_duel, run_round_duel
 from epago.eval.probes import ProbeFailure
 from epago.eval.remote import (
     DirRefIndex,
     DuelRequest,
+    EntrantRequest,
     RemoteEvalError,
     RemoteEvalRunner,
+    RoundRequest,
     outcome_from_wire,
     outcome_to_wire,
     ref_from_wire,
@@ -38,6 +40,7 @@ TEMPLATE_TOML = Path(__file__).parent / "data" / "chain-template.toml"
 
 KING_REF = ModelRef(repo="org/king", digest="hf:" + "a" * 40)
 CHALL_REF = ModelRef(repo="org/challenger", digest="hf:" + "b" * 40)
+RIVAL_REF = ModelRef(repo="org/rival", digest="hf:" + "c" * 40)
 
 
 class FakeSession:
@@ -217,6 +220,94 @@ def test_remote_probes_compose_server_probe_runner(arena) -> None:
     failures = arena["runner"].run_probes(arena["chall_dir"], arena["king_dir"])
     assert [f.code for f in failures] == ["stub_probe"]
     assert failures[0].detail == "challenger|king"
+
+
+# --- rounds ---------------------------------------------------------------------
+
+
+@pytest.fixture()
+def round_arena(tmp_path):
+    """A server + runner over a king and two entrants, for the /round path."""
+    dirs = {
+        KING_REF.digest: tmp_path / "king",
+        CHALL_REF.digest: tmp_path / "challenger",
+        RIVAL_REF.digest: tmp_path / "rival",
+    }
+    pub, priv = _tasks("pub", 30), _tasks("prv", 30)
+    factory = _factory(
+        {
+            dirs[KING_REF.digest]: {t.task_id for t in pub[:15] + priv[:15]},
+            dirs[CHALL_REF.digest]: {t.task_id for t in pub[:20] + priv[:20]},
+            dirs[RIVAL_REF.digest]: {t.task_id for t in pub[5:12] + priv[5:12]},
+        }
+    )
+    app = create_app(
+        FakeEnv(),
+        factory,
+        cache_dir=tmp_path / "server-cache",
+        materialize=_stub_materializer(dirs),
+        probe_runner=lambda challenger, king: [],
+    )
+    index = DirRefIndex()
+    for ref in (KING_REF, CHALL_REF, RIVAL_REF):
+        index.register(ref, dirs[ref.digest])
+    runner = RemoteEvalRunner(
+        ref_resolver=index.resolve, client=TestClient(app), retry_wait_s=0.0
+    )
+    spec = RoundDuelSpec(
+        king_dir=dirs[KING_REF.digest],
+        entrants=tuple(
+            Entrant(
+                digest=ref.digest,
+                repo=ref.repo,
+                author_hotkey=hotkey,
+                challenger_dir=dirs[ref.digest],
+            )
+            for ref, hotkey in ((CHALL_REF, "5" + "G" * 47), (RIVAL_REF, "5" + "H" * 47))
+        ),
+        public_tasks=pub,
+        private_tasks=priv,
+        round=7,
+        round_block_hash="0xfeedbeef",
+        king_acc_ema=0.95,
+        noise_floor=0.0005,
+    )
+    return {"runner": runner, "spec": spec, "factory": factory}
+
+
+def test_round_request_wire_round_trip_is_exact(round_arena) -> None:
+    spec = round_arena["spec"]
+    request = RoundRequest(
+        king=KING_REF,
+        entrants=[
+            EntrantRequest(
+                challenger=ref, digest=e.digest, repo=e.repo, author_hotkey=e.author_hotkey
+            )
+            for ref, e in zip((CHALL_REF, RIVAL_REF), spec.entrants)
+        ],
+        public_tasks=spec.public_tasks,
+        private_tasks=spec.private_tasks,
+        round=spec.round,
+        round_block_hash=spec.round_block_hash,
+        king_acc_ema=spec.king_acc_ema,
+        noise_floor=spec.noise_floor,
+    )
+    assert RoundRequest.from_wire(json.loads(json.dumps(request.to_wire()))) == request
+
+
+def test_remote_round_matches_local_bit_identically(round_arena) -> None:
+    spec = round_arena["spec"]
+    local = run_round_duel(spec, FakeEnv(), round_arena["factory"])
+    remote = round_arena["runner"].run_round_duel(spec, None, None, None)
+    assert remote == local
+    assert [r.entrant for r in remote] == list(spec.entrants)
+
+
+def test_remote_round_refuses_results_for_a_different_field(round_arena, monkeypatch) -> None:
+    runner = round_arena["runner"]
+    monkeypatch.setattr(runner, "_post", lambda path, payload: {"results": []})
+    with pytest.raises(RemoteEvalError):
+        runner.run_round_duel(round_arena["spec"])
 
 
 def test_king_ref_resolver_overrides_dir_lookup(arena) -> None:
@@ -444,6 +535,8 @@ def test_wiring_switch_uses_remote_runner_and_registers_refs(
     assert isinstance(deps.run_duel.__self__, RemoteEvalRunner)
     assert deps.run_duel.__self__ is deps.run_calibration_duel.__self__
     assert deps.run_probes.__self__ is deps.run_duel.__self__
+    # A round is one call, so the king answers the exam once, not per entrant.
+    assert deps.run_round_duel.__self__ is deps.run_duel.__self__
     assert deps.llm_judge is None  # EPAGO_ENABLE_LLM_JUDGE not set
 
     # The materialize wrapper registers (ref, dir) pairs for reverse lookup.

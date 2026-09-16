@@ -90,7 +90,12 @@ class ValidatorState:
     def __init__(self, state_dir: str | Path) -> None:
         self.state_dir = Path(state_dir)
         self.king: KingState | None = None
+        # 0.5 is only the stand-in the first round's floor is computed from; it is
+        # not an accuracy. The first scored round replaces it outright.
         self.king_acc_ema: float = 0.5
+        # One entry per scored round: {round, block, observed, ema, coronation}.
+        # The dashboard plots these, never the stand-in.
+        self.king_acc_history: list[dict[str, Any]] = []
         self.king_coronation_delta: float = 0.0
         self.queue: list[QueuedSubmission] = []
         self.failure_memory: dict[str, dict[str, Any]] = {}   # digest -> {code, detail, block}
@@ -169,6 +174,9 @@ class ValidatorState:
         data = json.loads(path.read_text())
         state.king = _king_from_dict(data.get("king"))
         state.king_acc_ema = float(data.get("king_acc_ema", 0.5))
+        state.king_acc_history = [
+            dict(h) for h in data.get("king_acc_history") or [] if isinstance(h, dict)
+        ]
         state.king_coronation_delta = float(data.get("king_coronation_delta", 0.0))
         # Filter unknown keys so old state files (e.g. with the retired
         # ``bond`` field) still load without operator intervention.
@@ -224,6 +232,7 @@ class ValidatorState:
         return {
             "king": _king_to_dict(self.king),
             "king_acc_ema": self.king_acc_ema,
+            "king_acc_history": self.king_acc_history,
             "king_coronation_delta": self.king_coronation_delta,
             "queue": [asdict(q) for q in self.queue],
             "failure_memory": self.failure_memory,
