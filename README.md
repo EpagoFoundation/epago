@@ -126,7 +126,7 @@ coordination.
 | | Step | What happens |
 |---|---|---|
 | 1 | **Submit** | A miner trains however they like, uploads a digest-pinned checkpoint, and commits it through timelock commit-reveal — nobody (including the miner) knows the eval tasks before the reveal lands. |
-| 2 | **Gate** | Free CPU checks kill spam (config lock, size cap, copies, one submission per hotkey); cheap probes kill harness-breakers. GPU time is spent only on genuine attempts. Challengers upload privately, so losing never exposes your weights to the rivals that beat you — only a crowned model becomes public. |
+| 2 | **Gate** | Free CPU checks kill spam (config lock, size cap, copies, three attempts per hotkey, one model per round); cheap probes kill harness-breakers. GPU time is spent only on genuine attempts. Challengers upload privately, so losing never exposes your weights to the rivals that beat you — only a crowned model becomes public. |
 | 3 | **Duel** | Challenger and king answer the *same* ~1,000 fresh tasks — 800 derived deterministically from the reveal's block hash (publicly replayable), 200 from each validator's private pool (overfit tripwire). |
 | 4 | **Crown** | Accept requires the 99.9% lower confidence bound on improvement to clear an adaptive floor **δ = 0.05 × (1 − king accuracy)**, clamped above measured harness noise — **twice**: the round's provisional winner is re-dueled on a fresh confirmation exam before any ACCEPT is committed, so a lucky draw has to repeat. When accepting verdicts cover **≥ 51% of validator stake**, the challenger is king — at the same block, for every observer. |
 | 5 | **Earn** | Emissions flow by a schedule that keeps the arena alive (below). Then everyone attacks the new king. |

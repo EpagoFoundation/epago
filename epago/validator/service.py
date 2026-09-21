@@ -79,7 +79,7 @@ from epago.validator.audit import (
     package_code_digest,
     record_digest,
 )
-from epago.validator.intake import apply_cooldown, cooldown_triggered, scan_and_enqueue
+from epago.validator.intake import scan_and_enqueue
 from epago.validator.state import (
     QueuedSubmission,
     ValidatorState,
@@ -657,6 +657,17 @@ class ValidatorService:
         queue for the next round, and the cut is logged rather than silent.
         """
         eligible = [q for q in self.state.queue if q.reveal_block < start.block]
+        # One model per hotkey per round, the latest reveal. Intake already
+        # replaces a hotkey's waiting model when it reveals a newer one; this
+        # keeps the rule true even for a queue written before that existed.
+        latest: dict[str, QueuedSubmission] = {}
+        for q in sorted(eligible, key=lambda q: (q.reveal_block, q.digest)):
+            older = latest.get(q.author_hotkey)
+            if older is not None:
+                self.state.queue = [x for x in self.state.queue if x.digest != older.digest]
+                self.state.statuses[older.digest] = SubmissionStatus.SUPERSEDED.value
+            latest[q.author_hotkey] = q
+        eligible = list(latest.values())
         eligible.sort(key=lambda q: (q.reveal_block, q.digest))
         if len(eligible) > constants.ROUND_MAX_ENTRANTS:
             deferred = eligible[constants.ROUND_MAX_ENTRANTS:]
@@ -683,6 +694,11 @@ class ValidatorService:
             self.state.last_round_block = start.block
             return
 
+        # The round takes these models: each uses one of its hotkey's attempts
+        # now, whatever happens to it in admission or the duel. Keyed by round,
+        # so a round retried after a failure charges once.
+        for q in field:
+            self.state.record_attempt(q.author_hotkey, start.round, q.digest)
         self.state.round_in_progress = {
             "round": start.round,
             "block": start.block,
@@ -764,7 +780,7 @@ class ValidatorService:
             if confirmation is None or not confirmation.outcome.accepted:
                 # An unconfirmed win settles as a near-miss: the entrant showed
                 # lcb > delta once, keeps its arena credit and its re-duel
-                # right, and pays no cooldown — but a coronation is a
+                # right — but a coronation is a
                 # 99.9%-confidence event and one clear is not two. A failed
                 # confirmation *mint* demotes as well, never crowns: the
                 # conservative direction for an event this hard to reverse.
@@ -853,17 +869,13 @@ class ValidatorService:
         # so the earlier reveal keeps the slot.
         claimed: dict[str, str] = {}
         for sub in field:
-            def resolve(status: SubmissionStatus, code: str, detail: str, cool: bool = False) -> None:
+            def resolve(status: SubmissionStatus, code: str, detail: str) -> None:
                 self.state.record_failure(sub.digest, code, detail, block)
                 self.state.record_verdict(
                     digest=sub.digest, hotkey=sub.author_hotkey, status=status,
                     lcb_pub=0.0, verdict_block=block,
                 )
                 self.state.record_sla(sub.digest, sub.reveal_block, sub.enqueued_block, block)
-                if cool:
-                    apply_cooldown(
-                        self.state, sub.author_hotkey, block, queue_depth=len(self.state.queue)
-                    )
                 self.state.queue = [q for q in self.state.queue if q.digest != sub.digest]
 
             try:
@@ -901,7 +913,6 @@ class ValidatorService:
                     SubmissionStatus.FAILED_PROBES,
                     "probes",
                     "; ".join(f"{f.code}: {f.detail}" for f in probe_failures),
-                    cool=True,
                 )
                 continue
 
@@ -920,15 +931,14 @@ class ValidatorService:
             # sharding) mint a fresh digest — a free second draw on the same
             # content. The fingerprint registry closes that: weights that have
             # ever dueled are terminal under every digest, and re-entering
-            # known content cools the hotkey down like any other junk
-            # submission — a retry must at least be a retrain.
+            # known content forfeits the attempt the round already charged —
+            # a retry must at least be a retrain.
             prior = self.state.seen_fingerprints.get(fingerprint)
             if prior is not None and prior != sub.digest:
                 resolve(
                     SubmissionStatus.FAILED_INTAKE,
                     "duplicate_weights",
                     f"identical weights already dueled as {prior}",
-                    cool=True,
                 )
                 continue
             claimed[fingerprint] = sub.digest
@@ -1164,10 +1174,6 @@ class ValidatorService:
             self.state.record_failure(
                 entrant.digest, "duel_lost", f"lcb_pub={outcome.lcb_pub:.6f}", verdict_block
             )
-        if cooldown_triggered(status):
-            apply_cooldown(
-                self.state, entrant.author_hotkey, verdict_block, queue_depth=len(self.state.queue)
-            )
         self.state.record_verdict(
             digest=entrant.digest,
             hotkey=entrant.author_hotkey,
@@ -1204,8 +1210,8 @@ class ValidatorService:
         """Status for one entrant, given the round's winner.
 
         An entrant that cleared the floor but did not win is a **near-miss**,
-        not a loss: it beat the king and only lost the round, so it earns arena
-        credit and pays no cooldown.
+        not a loss: it beat the king and only lost the round, so it keeps one
+        re-entry of the same model on fresh tasks.
         """
         if is_winner:
             return SubmissionStatus.ACCEPTED
@@ -2121,8 +2127,8 @@ class ValidatorService:
         emission state and arena entries. A fixed burn
         (``emissions.burn_share`` above zero) skips the gate: the burn key
         takes that share and the king the rest from its first coronation.
-        Bad-faith challengers are disciplined by intake cooldowns (see
-        :mod:`epago.validator.intake`), not by weight manipulation.
+        Bad-faith challengers are disciplined by the intake attempt allowance
+        (see :mod:`epago.validator.intake`), not by weight manipulation.
         """
         block = self.deps.clock()
         last = self.state.last_weights_block

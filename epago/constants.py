@@ -160,8 +160,8 @@ TOOL_SURFACE: tuple[str, ...] = (
 # --- submissions ------------------------------------------------------------
 #: ``e2`` supersedes ``e1``: the author hotkey is no longer carried in the
 #: payload. It was self-declared and unverified, so anyone could submit a junk
-#: checkpoint under a competitor's identity and collect that competitor an
-#: escalating intake cooldown. The author is now the hotkey that signed the
+#: checkpoint under a competitor's identity and have it charged to that
+#: competitor. The author is now the hotkey that signed the
 #: commitment, which the chain already attests. ``e1`` payloads are dropped.
 REVEAL_VERSION: str = "e2"
 #: ``ev3`` carries the round a duel belongs to, on top of ``ev2``'s adaptive
@@ -232,6 +232,13 @@ QUEUE_BREAKER_HOURS: float = _env("QUEUE_BREAKER_HOURS", 36.0)
 CHALLENGE_BOND_BASE_ALPHA: float = _env("CHALLENGE_BOND_BASE_ALPHA", 1.0)
 BOND_BURN_LCB_THRESHOLD: float = _env("BOND_BURN_LCB_THRESHOLD", -0.05)
 NEAR_MISS_RETRIES: int = _env("NEAR_MISS_RETRIES", 1)
+#: Attempts per hotkey. A round that takes a hotkey's model into its field uses
+#: one, whatever happens to the model after that; a reveal refused at intake or
+#: replaced before the round opens uses none. Counted only from
+#: ATTEMPTS_FROM_ROUND on, so every hotkey enters that round with the full
+#: allowance, whatever it submitted before.
+MAX_ATTEMPTS_PER_HOTKEY: int = _env("MAX_ATTEMPTS_PER_HOTKEY", 3)
+ATTEMPTS_FROM_ROUND: int = _env("ATTEMPTS_FROM_ROUND", 4)
 
 # --- weights ----------------------------------------------------------------
 WEIGHT_INTERVAL_BLOCKS: int = _env("WEIGHT_INTERVAL_BLOCKS", 300)

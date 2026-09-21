@@ -9,10 +9,10 @@ Four formats live on the timelock-reveal channel:
   The author is **not** on the wire. It is the hotkey that signed the
   commitment, which the chain attests and :meth:`ChainClient.read_revealed_submissions`
   supplies. The predecessor format ``e1`` carried a self-declared author field
-  that nothing verified; because intake keys ownership, cooldowns and emission
+  that nothing verified; because intake keys ownership, attempts and emission
   attribution off that field, any hotkey could submit a deliberately losing
-  checkpoint under a rival's identity and put the rival on an escalating
-  cooldown. ``e1`` payloads no longer parse.
+  checkpoint under a rival's identity and have it charged to the rival.
+  ``e1`` payloads no longer parse.
 
 * ``ev3`` verdict commitments, published by validators after a duel::
 

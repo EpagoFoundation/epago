@@ -272,7 +272,7 @@ def run_round_duel(
     statistic, same bootstrap LCB, same adaptive floor — so a round result and a
     one-off duel result mean the same thing. Picking the winner is the caller's
     job (:mod:`epago.validator.service`); this returns every entrant's outcome
-    including the losers, because they still earn arena credit and cooldowns.
+    including the losers, because every entrant gets its own verdict.
 
     An entrant whose sweep raises is scored as a total loss rather than aborting
     the round: one broken checkpoint must not deny every other entrant its duel.
@@ -412,8 +412,8 @@ def _forfeit(spec: "RoundDuelSpec", entrant, delta: float) -> DuelOutcome:
     """Outcome for an entrant whose sweep could not be run at all.
 
     Scored as a maximal loss rather than skipped, so a checkpoint that reliably
-    crashes the harness is priced by the cooldown ladder instead of being a free
-    way to occupy a slot in every round.
+    crashes the harness uses its hotkey's attempt instead of being a free way to
+    occupy a slot in every round.
     """
     n_pub = max(len(spec.public_tasks), 1)
     n_priv = max(len(spec.private_tasks), 1)
