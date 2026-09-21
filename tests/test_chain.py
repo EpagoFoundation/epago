@@ -769,6 +769,13 @@ def test_the_verifier_reports_terms_that_hide_in_titles():
 # --- audited pools reaching the validator -----------------------------------
 
 
+class _EveryPaper:
+    """A corpus that has every paper, for tests about file handling alone."""
+
+    def get(self, doc_id, mask_doc_ids=frozenset()):
+        return object()
+
+
 def test_an_audited_pool_file_is_consumed_once_and_never_re_served(tmp_path, monkeypatch):
     """A retired pool publishes in full, so re-serving it hands miners the answers.
 
@@ -804,14 +811,17 @@ def test_an_audited_pool_file_is_consumed_once_and_never_re_served(tmp_path, mon
     monkeypatch.setenv("EPAGO_AUDITED_POOL_DIR", str(pool_dir))
 
     managed = ManagedPrivatePool.__new__(ManagedPrivatePool)
+    managed._corpus = _EveryPaper()
     first = managed._audited_tasks()
     assert len(first) == constants.N_PRIV_TASKS
     # The hidden terms never reach a served task.
     assert not hasattr(first[0], "meta")
     assert "SECRET" not in first[0].question
 
-    # Consumed, so a second rotation does not re-serve it.
-    assert managed._audited_tasks() == []
+    # Consumed, so a second rotation does not re-serve it — and with no unused
+    # file left it refuses rather than building the pool from another source.
+    with pytest.raises(RuntimeError, match="no unused audited pool"):
+        managed._audited_tasks()
     assert (pool_dir / "pool-001.jsonl.used").exists()
 
 
@@ -838,7 +848,9 @@ def test_a_short_audited_pool_is_skipped_rather_than_served(tmp_path, monkeypatc
     monkeypatch.setenv("EPAGO_AUDITED_POOL_DIR", str(pool_dir))
 
     managed = ManagedPrivatePool.__new__(ManagedPrivatePool)
-    assert managed._audited_tasks() == []
+    managed._corpus = _EveryPaper()
+    with pytest.raises(RuntimeError, match="no unused audited pool"):
+        managed._audited_tasks()
     # Left in place: a short file is a supply problem to fix, not a used pool.
     assert (pool_dir / "short.jsonl").exists()
 

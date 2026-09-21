@@ -3,7 +3,7 @@
 A validator runs one of these per GPU box. The invariants that matter:
 
 * exactly one GPU job at a time — a single asyncio.Lock guards the GPU, and a
-  second POST /duel (or /calibrate, /probes) while one is running gets 409
+  second POST /duel (or /round, /calibrate, /probes) while one is running gets 409
   instead of queueing, so the caller (the validator scheduler) owns queue
   policy. One *job* still means one job when the box has eight cards: the job
   itself fans out across them (see :mod:`epago.eval.pool`);
@@ -39,12 +39,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from epago.core.types import ModelRef
+from epago.eval import transcripts
 from epago.eval.backend import ModelBackend
-from epago.eval.duel import run_calibration_duel, run_duel
+from epago.eval.duel import run_calibration_duel, run_duel, run_round_duel
 from epago.eval.harness import harness_digest
 from epago.eval.judge import LlmJudge
 from epago.eval.remote import (
     DuelRequest,
+    RoundRequest,
     outcome_to_wire,
     ref_from_wire,
     task_from_wire,
@@ -162,6 +164,7 @@ def create_app(
             )
             spec = req.to_spec(Path(king_dir), Path(challenger_dir))
             king_key = str(Path(king_dir).resolve())
+            transcripts.begin_job(f"duel-{req.round_id or req.author_hotkey}")
             try:
                 outcome = await asyncio.to_thread(
                     run_duel,
@@ -173,6 +176,7 @@ def create_app(
                     pool=pool,
                 )
             finally:
+                transcripts.end_job()
                 # With a pool, residency is the pool's business: every device
                 # holds one replica and drops it only when handed a different
                 # checkpoint, so the king stays warm and nothing needs evicting.
@@ -188,6 +192,49 @@ def create_app(
             publish({"phase": "done", "accepted": outcome.accepted})
             return outcome_to_wire(outcome)
 
+    @app.post("/round")
+    async def round_duel(request: Request) -> dict:
+        authorize(request)
+        req: RoundRequest = parse_body(await request.json(), RoundRequest.from_wire)
+        if duel_lock.locked():
+            raise HTTPException(status_code=409, detail="a duel is already running")
+        async with duel_lock:
+            loop = asyncio.get_running_loop()
+
+            def on_progress(event: dict) -> None:
+                loop.call_soon_threadsafe(publish, event)
+
+            king_dir = await asyncio.to_thread(materialize_fn, req.king, cache)
+            challenger_dirs = [
+                Path(await asyncio.to_thread(materialize_fn, e.challenger, cache))
+                for e in req.entrants
+            ]
+            spec = req.to_spec(Path(king_dir), challenger_dirs)
+            transcripts.begin_job(f"round{req.round:06d}")
+            try:
+                results = await asyncio.to_thread(
+                    run_round_duel,
+                    spec,
+                    env,
+                    cached_factory,
+                    llm_judge,
+                    on_progress=on_progress,
+                    pool=pool,
+                )
+            finally:
+                transcripts.end_job()
+                # Without a pool the round runner closes every engine it opens,
+                # the king's included, so nothing is left to keep resident.
+                if pool is None:
+                    evict_all_but("")
+            publish({"phase": "done", "round": req.round})
+            return {
+                "results": [
+                    {"digest": r.entrant.digest, "outcome": outcome_to_wire(r.outcome)}
+                    for r in results
+                ]
+            }
+
     @app.post("/calibrate")
     async def calibrate(request: Request) -> dict:
         authorize(request)
@@ -202,11 +249,15 @@ def create_app(
             king_dir = await asyncio.to_thread(materialize_fn, king, cache)
             # Same judge the /duel path uses: the noise floor has to be measured
             # on the graded path duels actually run, judge included.
-            rate = await asyncio.to_thread(
-                lambda: run_calibration_duel(
-                    Path(king_dir), tasks, env, cached_factory, llm_judge, pool=pool
+            transcripts.begin_job("calibration")
+            try:
+                rate = await asyncio.to_thread(
+                    lambda: run_calibration_duel(
+                        Path(king_dir), tasks, env, cached_factory, llm_judge, pool=pool
+                    )
                 )
-            )
+            finally:
+                transcripts.end_job()
             return {"rate": rate}
 
     @app.post("/probes")

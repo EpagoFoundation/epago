@@ -718,7 +718,7 @@ the essentials:
 | Copy a **challenger** | Structurally impossible: a challenger uploads into a prefix only it can write and only the validator can read, so a losing checkpoint is never exposed to the rivals it lost to. Only a crowned model becomes public, and copying the king is already priced at zero |
 | Steal a checkpoint by re-revealing it | Digest ownership belongs to the first on-chain reveal; timelock prevents mempool sniping |
 | Architecture smuggling | Config lock, safetensors-only (no executable code), 1.05× size cap — all at intake, zero GPU |
-| Spam | **One submission per hotkey, permanently.** Whatever happens to it — crowned, near-miss or beaten — that hotkey is spent, and another attempt means registering a new one and paying the registration burn. Attempts are priced rather than free, so flooding the queue with speculative checkpoints costs real TAO instead of costing validators a rollout sweep each |
+| Spam | **Three attempts per hotkey, one model per round.** An attempt is used when a round takes the model, whatever the verdict; a later reveal before the round replaces an earlier one. Beyond three, another attempt means registering a new hotkey and paying the registration burn, so flooding the queue with speculative checkpoints costs real TAO instead of costing validators a rollout sweep each |
 | A single corrupt validator | Coronation requires ≥ θ stake; dissent is recorded and later checkable |
 | Silent benchmark drift | Scheduled anchoring of the king against an external public benchmark; internal-vs-external divergence published with an alarm |
 
@@ -772,8 +772,7 @@ throughput sets the network's verdict latency. The duel is embarrassingly parall
 tasks; validators run batched rollouts to keep the evaluation GPU saturated, turning what
 would be an hours-long serial duel into a much shorter batched one. Demand is structurally
 bounded — one live submission per participant, a hard cap on registered participants,
-one submission per hotkey, and an automatic queue circuit-breaker that prices intake in
-time when latency approaches the service target. The result is a system that delivers
+three attempts per hotkey with one model per round, and a cap on each round's field. The result is a system that delivers
 verdicts well inside its target window on a single evaluation GPU, and scales by adding
 GPUs with no mechanism change. All hardware sizing is done empirically by an included
 measurement tool rather than assumed.

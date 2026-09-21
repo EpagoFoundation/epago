@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from epago import constants
 from epago.core.emissions import ArenaEntry, inherits_reign, trim_arena
 from epago.core.types import KingState, ModelRef, SubmissionStatus
 
@@ -78,29 +79,35 @@ def _king_from_dict(data: dict[str, Any] | None) -> KingState | None:
 class ValidatorState:
     """The validator's durable memory.
 
-    Spam discipline is hotkey **cooldowns** (see
-    :mod:`epago.validator.intake`), persisted in :attr:`cooldowns` as
-    ``{hotkey: {until_block, strikes, last_strike_block}}`` so an escalation
-    ladder survives restarts. :attr:`burned_bonds` is a retired mechanism —
-    the "advisory bond" was never an extrinsic and is no longer accounted; the
-    attribute stays (always empty for new state) only so status tooling that
-    prints it keeps working against old state files.
+    Spam discipline is a per-hotkey **attempt allowance** (see
+    :mod:`epago.validator.intake`), persisted in :attr:`attempts` as
+    ``{hotkey: {round: digest}}`` so it survives restarts. :attr:`cooldowns`,
+    :attr:`spent_hotkeys` and :attr:`burned_bonds` are retired mechanisms,
+    kept only so older state files and the status tooling that prints them
+    keep working.
     """
 
     def __init__(self, state_dir: str | Path) -> None:
         self.state_dir = Path(state_dir)
         self.king: KingState | None = None
+        # 0.5 is only the stand-in the first round's floor is computed from; it is
+        # not an accuracy. The first scored round replaces it outright.
         self.king_acc_ema: float = 0.5
+        # One entry per scored round: {round, block, observed, ema, coronation}.
+        # The dashboard plots these, never the stand-in.
+        self.king_acc_history: list[dict[str, Any]] = []
         self.king_coronation_delta: float = 0.0
         self.queue: list[QueuedSubmission] = []
         self.failure_memory: dict[str, dict[str, Any]] = {}   # digest -> {code, detail, block}
         self.seen_digests: dict[str, str] = {}                # digest -> owner hotkey (first reveal)
-        # hotkey -> the one digest it ever put forward. A hotkey gets a single
-        # submission, permanently: to try again a miner registers a new one and
-        # pays the registration burn. That burn is the whole point -- it prices
-        # every attempt, so flooding the queue with speculative checkpoints
-        # costs real TAO instead of being free.
+        # Retired: the one-submission-per-hotkey ledger. Loaded and saved
+        # unchanged so older state files round-trip, but nothing consults it;
+        # ``attempts`` replaced it.
         self.spent_hotkeys: dict[str, str] = {}
+        # hotkey -> {round: digest}, one entry per round that took a model from
+        # that hotkey into its field. Keyed by round so a round retried after a
+        # failure never charges twice. See ``attempts_used``.
+        self.attempts: dict[str, dict[str, str]] = {}
         # Credential mailbox: when it was last published, and the digest of
         # what went out. Persisted so a restart does not immediately reissue
         # every miner's credentials, which would invalidate an upload already
@@ -123,7 +130,7 @@ class ValidatorState:
         self.genesis_block: int = 0
         self.arena: list[ArenaEntry] = []
         self.burned_bonds: dict[str, float] = {}              # retired; kept for status output
-        self.cooldowns: dict[str, dict[str, Any]] = {}        # hotkey -> {until_block, strikes, ...}
+        self.cooldowns: dict[str, dict[str, Any]] = {}        # retired; kept so old state round-trips
         # A round commits one ev3 per entrant, and the commitment pallet
         # rate-limits writes per hotkey, so deferred verdicts are a queue and
         # not a single slot: a dropped verdict never coronates.
@@ -169,6 +176,9 @@ class ValidatorState:
         data = json.loads(path.read_text())
         state.king = _king_from_dict(data.get("king"))
         state.king_acc_ema = float(data.get("king_acc_ema", 0.5))
+        state.king_acc_history = [
+            dict(h) for h in data.get("king_acc_history") or [] if isinstance(h, dict)
+        ]
         state.king_coronation_delta = float(data.get("king_coronation_delta", 0.0))
         # Filter unknown keys so old state files (e.g. with the retired
         # ``bond`` field) still load without operator intervention.
@@ -179,6 +189,7 @@ class ValidatorState:
         state.failure_memory = dict(data.get("failure_memory", {}))
         state.seen_digests = dict(data.get("seen_digests", {}))
         state.spent_hotkeys = dict(data.get("spent_hotkeys", {}))
+        state.attempts = {h: dict(v) for h, v in data.get("attempts", {}).items()}
         state.last_mailbox_block = data.get("last_mailbox_block")
         state.mailbox_digest = str(data.get("mailbox_digest", ""))
         state.seen_fingerprints = dict(data.get("seen_fingerprints", {}))
@@ -224,11 +235,13 @@ class ValidatorState:
         return {
             "king": _king_to_dict(self.king),
             "king_acc_ema": self.king_acc_ema,
+            "king_acc_history": self.king_acc_history,
             "king_coronation_delta": self.king_coronation_delta,
             "queue": [asdict(q) for q in self.queue],
             "failure_memory": self.failure_memory,
             "seen_digests": self.seen_digests,
             "spent_hotkeys": self.spent_hotkeys,
+            "attempts": self.attempts,
             "last_mailbox_block": self.last_mailbox_block,
             "mailbox_digest": self.mailbox_digest,
             "seen_fingerprints": self.seen_fingerprints,
@@ -339,9 +352,8 @@ class ValidatorState:
         near-misses seated themselves there, the arena could be paying before
         any king had ever existed.
 
-        What a near-miss still earns is the right to try again on fresh tasks.
-        Decisive-loss penalties are cooldowns, applied by the service through
-        :func:`epago.validator.intake.apply_cooldown`, not recorded here.
+        What a near-miss still earns is the right to try again on fresh tasks,
+        and that retry uses one of the hotkey's attempts like any other entry.
         """
         self.statuses[digest] = status.value
         if status is SubmissionStatus.NEAR_MISS and lcb_pub > 0:
@@ -353,6 +365,22 @@ class ValidatorState:
                 "verdict_block": verdict_block,
                 "retries": int(prior.get("retries", 0)),
             }
+
+    def record_attempt(self, hotkey: str, round_number: int, digest: str) -> None:
+        """Charge ``hotkey`` one attempt: a round took its model into the field.
+
+        Idempotent per round, so a round retried after a failure (or reopened
+        after a restart) charges once.
+        """
+        self.attempts.setdefault(hotkey, {})[str(round_number)] = digest
+
+    def attempts_used(self, hotkey: str) -> int:
+        """Attempts ``hotkey`` has spent, counting rounds from ATTEMPTS_FROM_ROUND on."""
+        return sum(
+            1
+            for rnd in self.attempts.get(hotkey, {})
+            if int(rnd) >= constants.ATTEMPTS_FROM_ROUND
+        )
 
     # ---- king ------------------------------------------------------------
 

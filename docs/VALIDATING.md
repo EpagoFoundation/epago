@@ -39,7 +39,8 @@ against GPU memory:
 | `EPAGO_ROLLOUT_CONCURRENCY` | Concurrent rollouts per duel, step-batched through the engine (default 32). Raise until the GPU saturates; lower when memory-constrained. |
 | `EPAGO_EVAL_LOW_VRAM` | Keeps one engine resident at a time — roughly halves peak GPU memory at the cost of one model reload per duel. Single-GPU boxes only; a multi-GPU box has no reason to swap. |
 | `EPAGO_VLLM_GPU_MEM_UTIL` | Explicit per-engine share of GPU memory (vLLM `gpu_memory_utilization`). |
-| `EPAGO_EVAL_GPUS` | Which cards the evaluator may use (default: all visible). A count (`4`) or a list of logical indices into the visible set (`0,2,5`; `3,` for exactly one). |
+| `EPAGO_EVAL_GPUS` | Which cards the evaluator may use (default: all visible). A count (`4`) or a list of logical indices into the visible set (`0,2,5`; `3,` for exactly one). Counts cards, before they are grouped for `EPAGO_VLLM_TP`. |
+| `EPAGO_EVAL_TRANSCRIPT_DIR` | Off by default. When set, the eval server writes every finished episode of a duel, round or calibration run — the task, each model output, each tool call and its result, and the scored answer — as JSONL under this directory, one folder per run. The files hold private-half tasks and answers, so keep the directory private. |
 
 ### Using every card
 
@@ -50,6 +51,13 @@ card counts would then return different verdicts. Every replica is the same engi
 single-GPU validator loads, in a process that can see exactly one GPU — a replica is
 not "a model on card 5", it is a single-GPU validator's engine that happens to live on
 card 5. The one-card path is completely unchanged; it never builds a pool at all.
+
+A model too big for one card is the exception. `EPAGO_VLLM_TP=k` splits every engine on
+the box over k cards, pooled or not, so a replica is then a group of k cards (`0,1,2,3`)
+running exactly the engine the one-engine path would run. Eight 32 GB cards with the
+57 GB bf16 king and `EPAGO_VLLM_TP=4` make two replicas. A box with only k cards has one
+group, builds no pool, and stays on the one-engine path; a card count that does not
+divide by k is refused at startup.
 
 Allocation is one rule: `replicas_per_sweep = max(1, n_gpus // n_pending_sweeps)`. A
 sweep is one model answering the exam once, and a competition round with N entrants is

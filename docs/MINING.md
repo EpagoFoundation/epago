@@ -94,9 +94,8 @@ flowchart TD
     D -->|"lcb_pub > δ, quorum ≥ 51% stake"| K["👑 Crowned"]
     D -->|"0 < lcb_pub ≤ δ"| N["Near-miss<br/>one re-duel, fresh tasks"]
     N -->|"one re-duel, fresh seed"| D
-    D -->|"lcb_pub < −0.05 or probe failure"| C["Decisive loss<br/>hotkey is spent"]
-    D -->|"otherwise lost"| T
-    C -->|"new hotkey"| T
+    D -->|"lost, or failed checks"| C["Attempt used<br/>3 per hotkey"]
+    C -->|"new model, next round"| T
 ```
 
 | # | Step | What happens |
@@ -155,10 +154,12 @@ aims for the 0.45–0.65 band) and the validator's calibrated floor is 0.030:
 
 - headroom term: `0.05 × (1 − 0.55) = 0.0225`
 - noise clamp: `DELTA_NOISE_MULTIPLIER × 0.030`
-- with the shipped multiplier the noise clamp binds, so plan against `delta ≈ 0.03` or
-  higher rather than against the headroom term. Check the live value on the dashboard
-  (`delta_clamp`) instead of assuming a static fallback — it moves with the reigning
-  king's hardware, and it moves the bar you have to clear.
+- with the shipped multiplier the noise clamp binds here, so plan against `delta ≈ 0.03`
+  or higher rather than against the headroom term. A weaker king flips that: at an
+  accuracy EMA of 0.20 the headroom term is `0.04` and binds instead. Check the live
+  bar on the dashboard (`delta_next`, the champion card's "next bar") instead of
+  assuming a static fallback — it moves with the king's measured accuracy and with the
+  validator's hardware noise.
 
 Now suppose on the 800 public tasks you solve 30 tasks the king misses and the
 king solves 6 you miss (164 ties): mean difference `μ̂ = 24/200 = 0.12`. The
@@ -230,29 +231,44 @@ re-scored by anyone. If you lose and believe you were scored unfairly, publish
 your own weights and let anyone check — the burden sits with the party making
 the claim, which costs you nothing but the secrecy you were keeping anyway.
 
-## One submission per hotkey
+## Three attempts per hotkey
 
-**A hotkey gets one submission, permanently.** Whatever happens to it — crowned,
-near-miss, or beaten — that hotkey is spent. Another attempt means registering a
-fresh hotkey and paying the registration burn.
+**A hotkey may enter three rounds, one model per round, each a different model.**
+Counting starts at round 4, so every hotkey — including one that submitted
+before — begins round 4 with all three.
+
+- **An attempt is used when a round takes your model**, whatever happens to it
+  there: crowned, near-miss, beaten, or failed its checks. A reveal refused at
+  intake (stale parent, wrong folder, and so on) uses nothing.
+- **One model per round, and the last one counts.** If you reveal a second model
+  before the next round opens, it replaces the first, and the replaced one uses
+  no attempt. A model already taken into a running round stays there; a new
+  reveal waits for the round after.
+- **Each attempt is a new model.** A model that has been scored is not scored
+  again, under any digest. The one exception is a near-miss (below).
+- **No cooldown.** Losing costs the attempt and nothing more; your next model can
+  enter the very next round.
+
+Once a hotkey has used all three, further reveals from it are refused as
+`attempts_exhausted`. Another hotkey means registering a new one.
 
 Plan around it. There is no way to iterate cheaply against the live exam, and
 that is deliberate: if attempts were free the cheapest strategy would be to
 upload many mediocre checkpoints and let the duels find one that got lucky on
 its holdout, and every one of those costs validators a full rollout sweep.
-Pricing each attempt pushes the spend back into training, which is the only
-thing that actually moves your score.
+Capping attempts pushes the spend back into training, which is the only thing
+that actually moves your score.
 
 Three practical consequences:
 
 - **Run `preflight` before every reveal.** It is free, it runs the same intake
-  gates the validator runs, and a submission refused at intake does *not* spend
-  your hotkey — only a submission that reaches the queue does.
+  gates the validator runs, and a submission refused at intake uses no attempt
+  — only a round that takes your model does.
 - **Do not submit to probe the exam.** A losing submission tells you very little
-  and costs a registration.
+  and costs one of three attempts.
 - **Do not split one improvement across several hotkeys.** The coronation bonus
   scales with measured improvement, so revealing a whole improvement at once
-  pays more than dribbling it out, and each slice costs its own burn.
+  pays more than dribbling it out, and each extra hotkey costs its own burn.
 
 ## Near-misses
 
@@ -260,9 +276,9 @@ Losing with `lcb_pub > 0` — you are probably better, just not provably by
 `delta` — is a **near-miss**, and it is treated as an honest attempt:
 
 - no failure memory, no penalty;
-- **one immediate re-duel on a fresh seed.** That is the same submission being
-  re-judged against new tasks, never a resample of the same exam, and it does
-  not require a second hotkey.
+- **one re-entry of the same model on a fresh seed.** Reveal it again against
+  the current king and it is re-judged against new tasks, never a resample of
+  the same exam. The re-entry is one of the hotkey's three attempts.
 
 A near-miss does not earn emission. The arena pays former kings, not
 challengers — see the emissions section of the whitepaper. While mainnet runs
@@ -271,14 +287,11 @@ earns.
 
 ## No bonds
 
-Nothing is escrowed to submit. The registration burn behind each hotkey is the
-whole anti-spam instrument, and it prices attempts directly rather than
-throttling them after the fact.
-
-Rotating to fresh hotkeys is exactly what a serious miner does between attempts,
-and exactly what makes spamming expensive: every hotkey must win a competitive
-UID and pay its own burn, so a flood of junk costs the flooder linearly while
-honest submissions flow past unaffected.
+Nothing is escrowed to submit. The attempt allowance is the anti-spam instrument:
+three rounds per hotkey caps what any one identity can draw from the exam, and a
+fresh hotkey has to win a competitive UID and pay its own registration burn, so a
+flood of junk costs the flooder linearly while honest submissions flow past
+unaffected.
 
 ## Why copying doesn't pay
 
@@ -288,7 +301,7 @@ intake by shard comparison, and the digest-ownership rule means you cannot claim
 someone else's checkpoint by re-revealing it. A perturbed copy passes intake but
 is, statistically, the king plus noise: its paired differences center at or below
 zero, and it cannot clear a 99.9% lower confidence bound above `delta`. It also
-costs a hotkey, since that hotkey is spent whatever the verdict. The mechanism
+uses one of its hotkey's three attempts, whatever the verdict. The mechanism
 does not try to detect copies; it prices them at zero and charges for the
 attempt. Two more rules close the residual luck: near-ties inside the
 calibrated noise floor go to the **earlier reveal** (a perturbed copy of a pending

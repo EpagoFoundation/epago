@@ -45,6 +45,9 @@ class SubmissionStatus(StrEnum):
     NEAR_MISS = "near_miss"
     ACCEPTED = "accepted"
     LAPSED = "lapsed"
+    # Replaced in the queue by a later submission from the same hotkey before
+    # any round took it. Uses no attempt.
+    SUPERSEDED = "superseded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,8 +240,8 @@ class Verdict:
         * ``0 < lcb <= delta`` — probably better, not provably;
         * ``lcb > delta`` — provably better, but another entrant in the same
           round was better still. A round crowns one winner, so a genuine
-          improver can be rejected purely for placing second; charging it a
-          cooldown for that would punish exactly the behaviour the subnet wants.
+          improver can be rejected purely for placing second; penalising it
+          for that would punish exactly the behaviour the subnet wants.
 
         ``mu_priv > 0`` is what separates both from the overfit case: a
         challenger that clears the public floor while losing the private half

@@ -179,6 +179,7 @@ def run_duel(
                 env.tools_for_task,
                 llm_judge=llm_judge,
                 on_result=report,
+                transcript=(model, phase),
             )
         return out
 
@@ -271,7 +272,7 @@ def run_round_duel(
     statistic, same bootstrap LCB, same adaptive floor — so a round result and a
     one-off duel result mean the same thing. Picking the winner is the caller's
     job (:mod:`epago.validator.service`); this returns every entrant's outcome
-    including the losers, because they still earn arena credit and cooldowns.
+    including the losers, because every entrant gets its own verdict.
 
     An entrant whose sweep raises is scored as a total loss rather than aborting
     the round: one broken checkpoint must not deny every other entrant its duel.
@@ -312,7 +313,12 @@ def run_round_duel(
                     )
 
             out[phase] = run_rollouts_batched(
-                backend, ordered, env.tools_for_task, llm_judge=llm_judge, on_result=report
+                backend,
+                ordered,
+                env.tools_for_task,
+                llm_judge=llm_judge,
+                on_result=report,
+                transcript=(model, phase),
             )
         return out
 
@@ -406,8 +412,8 @@ def _forfeit(spec: "RoundDuelSpec", entrant, delta: float) -> DuelOutcome:
     """Outcome for an entrant whose sweep could not be run at all.
 
     Scored as a maximal loss rather than skipped, so a checkpoint that reliably
-    crashes the harness is priced by the cooldown ladder instead of being a free
-    way to occupy a slot in every round.
+    crashes the harness uses its hotkey's attempt instead of being a free way to
+    occupy a slot in every round.
     """
     n_pub = max(len(spec.public_tasks), 1)
     n_priv = max(len(spec.private_tasks), 1)
@@ -487,8 +493,14 @@ def run_calibration_duel(
         second = sweeps[1].phases["calibration"]
     else:
         backend = backend_factory(king_dir)
-        first = run_rollouts_batched(backend, ordered, env.tools_for_task, llm_judge=llm_judge)
-        second = run_rollouts_batched(backend, ordered, env.tools_for_task, llm_judge=llm_judge)
+        first = run_rollouts_batched(
+            backend, ordered, env.tools_for_task, llm_judge=llm_judge,
+            transcript=("calibration-a", "calibration"),
+        )
+        second = run_rollouts_batched(
+            backend, ordered, env.tools_for_task, llm_judge=llm_judge,
+            transcript=("calibration-b", "calibration"),
+        )
     diffs = [int(b.correct) - int(a.correct) for a, b in zip(first, second)]
     if not diffs:
         raise ValueError("calibration duel produced no comparable rollouts")

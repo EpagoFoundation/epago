@@ -91,8 +91,9 @@ from the hash of the block the request lands on, which the owner cannot choose.
 5. The provisional winner is re-dueled once on a fresh confirmation exam and
    must clear the floor again. Confirmed, it gets the round's only `ACCEPT`;
    unconfirmed, it settles as a near-miss. Runners-up that beat the king are
-   near-misses too — one re-duel on a fresh exam, no penalty. Every entrant's
-   hotkey is spent either way: one submission per hotkey, permanently.
+   near-misses too — one re-entry on a fresh exam, no penalty. Every entrant
+   uses one of its hotkey's three attempts either way (see MINING.md, "Three
+   attempts per hotkey").
 6. Quorum crowns the winner as usual.
 
 The round runs in the background. While it is scored, new submissions still join

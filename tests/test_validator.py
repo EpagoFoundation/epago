@@ -32,15 +32,6 @@ from epago.core.types import (
 )
 from epago.model.validation import IntakeFailure
 from epago.validator.audit import audit16, record_digest
-from epago.validator.intake import (
-    COOLDOWN_BLOCKS,
-    COOLDOWN_MAX_BLOCKS,
-    apply_cooldown,
-    cooldown_duration,
-    cooldown_triggered,
-    cooldown_until,
-    queue_pressure_scale,
-)
 from epago.validator.service import Deps, ValidatorService
 from epago.validator.state import ValidatorState, difficulty_from_dict, difficulty_to_dict
 
@@ -482,10 +473,13 @@ def test_whole_field_duels_and_one_winner_is_crowned(tmp_path):
                if h.state.statuses[d] == SubmissionStatus.ACCEPTED.value}
     assert crowned == {d_carol}
     assert h.state.king.ref.digest == d_carol
-    # The others beat the king too — runners-up, not losers, so no cooldown.
+    # The others beat the king too — runners-up, not losers.
     assert h.state.statuses[d_alice] == SubmissionStatus.NEAR_MISS.value
     assert h.state.statuses[d_bob] == SubmissionStatus.NEAR_MISS.value
-    assert h.state.cooldowns == {}
+    # The round took all three, so each hotkey was charged for it.
+    assert {hk for hk, rounds in h.state.attempts.items() if "1" in rounds} == {
+        "hk-alice", "hk-bob", "hk-carol"
+    }
     assert h.state.queue == []
 
     # New reveals against the old king digest still drop at intake.
@@ -516,7 +510,7 @@ def test_duplicate_digest_first_reveal_owns_it(tmp_path):
     assert h.state.king.author_hotkey == "hk-alice"
 
 
-def test_failed_probes_memory_and_cooldown(tmp_path):
+def test_failed_probes_are_remembered_and_cost_no_cooldown(tmp_path):
     h = make_harness(
         tmp_path, probe_failures=[IntakeFailure("format_probe", "17/20 invalid outputs")]
     )
@@ -526,10 +520,9 @@ def test_failed_probes_memory_and_cooldown(tmp_path):
 
     assert h.state.statuses[digest] == SubmissionStatus.FAILED_PROBES.value
     assert digest in h.state.failure_memory
-    # Probe failure starts a hotkey cooldown (there is no bond to burn).
-    cd = h.state.cooldowns["hk-alice"]
-    assert cd["strikes"] == 1
-    assert cd["until_block"] > h.chain.block - COOLDOWN_BLOCKS  # live cooldown
+    # The round took it, so it used an attempt; there is no cooldown on top.
+    assert h.state.attempts["hk-alice"] == {"1": digest}
+    assert h.state.cooldowns == {}
     assert published_verdicts(h.chain) == []  # no duel, no verdict
     assert h.state.king.ref.digest == h.cfg.seed.seed_digest
 
@@ -539,60 +532,6 @@ def test_failed_probes_memory_and_cooldown(tmp_path):
     settle(h)
     assert h.state.queue == []
     assert not h.holder["duel_specs"]
-
-    # Cooldown policy: everything that is not an acceptance or a near-miss
-    # pays. The old rule only fired below BOND_BURN_LCB_THRESHOLD, which left
-    # the -0.05..0 band free — exactly where a noise-perturbed copy of the king
-    # scores — so farming the arena pool and the false-acceptance tail was free.
-    assert cooldown_triggered(SubmissionStatus.QUEUED, probes_failed=True)
-    assert cooldown_triggered(SubmissionStatus.FAILED_PROBES)
-    assert cooldown_triggered(SubmissionStatus.DUEL_LOST)
-    assert cooldown_triggered(SubmissionStatus.FAILED_INTAKE)
-    assert not cooldown_triggered(SubmissionStatus.NEAR_MISS)
-    assert not cooldown_triggered(SubmissionStatus.ACCEPTED)
-
-
-def test_queue_pressure_scale_circuit_breaker():
-    assert queue_pressure_scale(0, 6.0) == 1.0
-    # 5 queued * 6h = 36h estimated latency: still within the breaker.
-    assert queue_pressure_scale(5, 6.0) == 1.0
-    # 12 queued -> 78h estimate, 42h over the 36h breaker -> two doublings.
-    assert queue_pressure_scale(12, 6.0) == 4.0
-
-
-def test_cooldown_duration_escalates_and_caps():
-    assert cooldown_duration(1) == COOLDOWN_BLOCKS
-    assert cooldown_duration(2) == min(2 * COOLDOWN_BLOCKS, COOLDOWN_MAX_BLOCKS)
-    assert cooldown_duration(50) == COOLDOWN_MAX_BLOCKS          # strike cap
-    # A queue the box can actually clear must not be punished: at the measured
-    # duel cost a depth of 12 projects well inside QUEUE_BREAKER_HOURS, so the
-    # breaker stays out of the way.
-    assert cooldown_duration(1, queue_depth=12) == COOLDOWN_BLOCKS
-    # It still fires on a backlog that would genuinely blow the SLA.
-    assert cooldown_duration(1, queue_depth=48) == min(          # breaker scale
-        COOLDOWN_BLOCKS * 4, COOLDOWN_MAX_BLOCKS
-    )
-    assert cooldown_duration(50, queue_depth=1000) == COOLDOWN_MAX_BLOCKS
-
-
-def test_cooldown_strikes_escalate_and_reset(tmp_path):
-    st = ValidatorState.load(tmp_path / "state")
-    first = apply_cooldown(st, "ck-x", block=1_000)
-    assert first["strikes"] == 1
-    assert first["until_block"] == 1_000 + COOLDOWN_BLOCKS
-    # Second decisive loss inside the memory window doubles the cooldown.
-    second = apply_cooldown(st, "ck-x", block=2_000)
-    assert second["strikes"] == 2
-    assert second["until_block"] == 2_000 + 2 * COOLDOWN_BLOCKS
-    assert cooldown_until(st, "ck-x", 2_001) == second["until_block"]
-    assert cooldown_until(st, "ck-x", second["until_block"]) is None  # expired
-    # A strike far outside the memory window starts over at 1.
-    third = apply_cooldown(st, "ck-x", block=2_000 + 200_000)
-    assert third["strikes"] == 1
-    # Cooldowns survive a state reload.
-    st.save()
-    reloaded = ValidatorState.load(tmp_path / "state")
-    assert reloaded.cooldowns["ck-x"]["strikes"] == 1
 
 
 def test_near_miss_earns_a_retry_not_an_arena_seat(tmp_path):
@@ -736,48 +675,121 @@ def test_transient_duel_error_requeues_front(tmp_path):
     assert h.state.king.ref.digest == digest
 
 
-# ------------------------------------------------------------------ cooldowns
+# ------------------------------------------------------------------ attempts
 
 
-def test_a_hotkey_is_spent_by_its_one_submission(tmp_path):
-    """One submission per hotkey, permanently.
-
-    A second reveal from the same hotkey is refused whatever happened to the
-    first, so an attempt costs a registration burn rather than being free. That
-    price is the point: without it the cheapest strategy is to submit many
-    mediocre checkpoints and let the duels find one that got lucky on its
-    holdout, and every one of those costs validators a full rollout sweep.
-
-    Note this makes the hotkey cooldown unreachable for the same hotkey -- it
-    is spent before a cooldown could bite. The cooldown ledger is left in place
-    because it still records strikes for the dashboard and for any future rule
-    that keys on an author across hotkeys.
-    """
-    h = make_harness(
+def _losing_harness(tmp_path):
+    return make_harness(
         tmp_path, outcome=make_outcome(lcb=-0.20, delta=0.03, accepted=False, mu_priv=-0.05)
     )
+
+
+def test_a_hotkey_uses_its_allowance_one_model_per_round(tmp_path, monkeypatch):
+    """One round per model, a different model each time, then the hotkey is out.
+
+    Each round that takes a model uses one attempt whatever the result, and a
+    loss costs nothing more: the next model is admitted straight away. The
+    allowance is 3 on the live subnet; 2 here keeps the fixture's small task
+    pool from running dry on a third round.
+    """
+    monkeypatch.setattr(constants, "ATTEMPTS_FROM_ROUND", 1)
+    monkeypatch.setattr(constants, "MAX_ATTEMPTS_PER_HOTKEY", 2)
+    h = _losing_harness(tmp_path)
+    for i, ch in enumerate("ab"):
+        if i:
+            h.chain.advance()
+        d, _, _ = add_challenger(
+            h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char=ch, register=(i == 0)
+        )
+        settle(h)
+        assert h.state.statuses[d] == SubmissionStatus.DUEL_LOST.value
+    assert h.state.attempts_used("hk-alice") == 2
+    assert h.state.cooldowns == {}
+
+    h.chain.advance()
+    d_c, _, _ = add_challenger(
+        h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="c", register=False
+    )
+    h.service.tick()
+    refused = [e for e in h.state.intake_log if e["digest"] == d_c]
+    assert refused and refused[0]["code"] == "attempts_exhausted"
+    assert h.state.queue == []
+    # Final for that reveal: recorded once, not re-logged on every tick.
+    h.service.tick()
+    assert len([e for e in h.state.intake_log if e["digest"] == d_c]) == 1
+
+
+def test_the_live_allowance_is_three_attempts_from_round_four():
+    assert constants.MAX_ATTEMPTS_PER_HOTKEY == 3
+    assert constants.ATTEMPTS_FROM_ROUND == 4
+
+
+def test_a_later_reveal_replaces_the_waiting_model(tmp_path, monkeypatch):
+    """One model per round, and the last one before the round opens counts."""
+    monkeypatch.setattr(constants, "ATTEMPTS_FROM_ROUND", 1)
+    h = _losing_harness(tmp_path)
     d_a, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.service.tick()
+    assert [q.digest for q in h.state.queue] == [d_a]
 
-    settle(h)
-    assert h.state.statuses[d_a] == SubmissionStatus.DUEL_LOST.value
-    assert h.state.spent_hotkeys["hk-alice"] == d_a
-
-    # A different model from the SAME hotkey is refused at intake, with a
-    # machine-readable code naming the submission that spent it.
     h.chain.advance()
     d_b, _, _ = add_challenger(
         h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="b", register=False
     )
     h.service.tick()
+    assert [q.digest for q in h.state.queue] == [d_b]
+    assert h.state.statuses[d_a] == SubmissionStatus.SUPERSEDED.value
 
-    spent = [
-        e for e in h.state.intake_log
-        if e["hotkey"] == "hk-alice" and e["code"] == "hotkey_spent"
-    ]
-    assert spent, "second submission from a spent hotkey must be refused"
-    assert d_a[:16] in spent[0]["detail"]
+    settle(h)
+    assert len(h.holder["duel_specs"]) == 1                     # one model dueled
+    assert h.state.statuses[d_b] == SubmissionStatus.DUEL_LOST.value
+    assert h.state.statuses[d_a] == SubmissionStatus.SUPERSEDED.value
+    # The replaced model used no attempt; the round that took the new one did.
+    assert h.state.attempts["hk-alice"] == {"1": d_b}
+
+
+def test_a_model_that_lost_cannot_be_entered_again(tmp_path):
+    h = _losing_harness(tmp_path)
+    d_a, _, payload = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    settle(h)
+    assert h.state.statuses[d_a] == SubmissionStatus.DUEL_LOST.value
+
+    h.chain.advance()
+    h.chain.inject_reveal("hk-alice", payload)   # same model, fresh reveal
+    h.service.tick()
     assert h.state.queue == []
-    assert d_b not in h.state.statuses
+
+
+def test_a_near_miss_reentry_is_one_of_the_attempts(tmp_path, monkeypatch):
+    monkeypatch.setattr(constants, "ATTEMPTS_FROM_ROUND", 1)
+    h = make_harness(
+        tmp_path, outcome=make_outcome(lcb=0.01, delta=0.03, accepted=False, mu_priv=0.005)
+    )
+    d_a, _, payload = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    settle(h)
+    assert h.state.statuses[d_a] == SubmissionStatus.NEAR_MISS.value
+    assert h.state.attempts_used("hk-alice") == 1
+
+    h.chain.advance()
+    h.chain.inject_reveal("hk-alice", payload)   # the re-duel right, on a fresh reveal
+    settle(h)
+    assert h.state.attempts["hk-alice"] == {"1": d_a, "2": d_a}
+    assert h.state.near_misses[d_a]["retries"] == 1
+
+
+def test_attempts_count_only_from_the_configured_round(tmp_path, monkeypatch):
+    """Everyone starts the counting round with the full allowance."""
+    monkeypatch.setattr(constants, "ATTEMPTS_FROM_ROUND", 3)
+    h = _losing_harness(tmp_path)
+    for i, ch in enumerate("ab"):
+        if i:
+            h.chain.advance()
+        add_challenger(
+            h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char=ch, register=(i == 0)
+        )
+        settle(h)
+    assert set(h.state.attempts["hk-alice"]) == {"1", "2"}
+    assert h.state.attempts_used("hk-alice") == 0
 
 
 def test_audit_signature_signs_canonical_unsigned_digest(tmp_path):
@@ -1091,15 +1103,13 @@ def test_no_duel_runs_before_the_active_pool_is_committed(tmp_path):
 # --- pricing every losing attempt ---------------------------------------------
 
 
-def test_a_near_copy_of_the_king_pays_a_cooldown(tmp_path):
-    """The arena-farming hole.
+def test_a_near_copy_of_the_king_uses_an_attempt(tmp_path):
+    """The arena-farming hole, priced by the attempt allowance.
 
     A noise-perturbed copy of the king scores lcb ~ 0: not byte-identical so the
     exact-copy gate misses it, far under the norm-sanity ratio so the probes
-    miss it, and above the old -0.05 cooldown threshold so it cost nothing.
-    Roughly half of those draw a positive LCB and book near-miss credit against
-    the arena pool, which made repeat submission a free draw on both the arena
-    budget and the 1-in-1000 false-acceptance tail.
+    miss it. Each one now spends one of its hotkey's three attempts, which is
+    what stops repeat submission being a free draw on the false-acceptance tail.
     """
     h = make_harness(tmp_path, outcome=make_outcome(lcb=-0.004, delta=0.03, accepted=False))
     digest, _, _ = add_challenger(h, "mallory", "hk-mal", "ck-mal-01", uid=4, digest_char="a")
@@ -1107,11 +1117,11 @@ def test_a_near_copy_of_the_king_pays_a_cooldown(tmp_path):
     settle(h)
 
     assert h.state.statuses[digest] == SubmissionStatus.DUEL_LOST.value
-    assert "hk-mal" in h.state.cooldowns
-    assert cooldown_until(h.state, "hk-mal", h.chain.block) is not None
+    assert h.state.attempts["hk-mal"] == {"1": digest}
+    assert h.state.cooldowns == {}
 
 
-def test_a_near_miss_still_costs_nothing(tmp_path):
+def test_a_near_miss_uses_its_attempt_and_keeps_its_retry(tmp_path):
     h = make_harness(tmp_path, outcome=make_outcome(lcb=0.01, delta=0.03, accepted=False,
                                                     mu_priv=0.005))
     digest, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
@@ -1119,12 +1129,13 @@ def test_a_near_miss_still_costs_nothing(tmp_path):
     settle(h)
 
     assert h.state.statuses[digest] == SubmissionStatus.NEAR_MISS.value
-    assert h.state.cooldowns == {}
+    assert h.state.attempts["hk-alice"] == {"1": digest}
+    assert digest in h.state.near_misses
 
 
-def test_overfit_rejection_pays_even_though_it_cleared_the_floor(tmp_path):
+def test_overfit_rejection_is_a_loss_even_though_it_cleared_the_floor(tmp_path):
     """lcb > delta but the private half failed: that is the generator-overfit
-    attack, and it must not be cheaper than an honest loss."""
+    attack, and it settles as a plain loss, not a near-miss."""
     h = make_harness(tmp_path, outcome=make_outcome(lcb=0.09, delta=0.03, accepted=False,
                                                     mu_priv=-0.01))
     digest, _, _ = add_challenger(h, "eve", "hk-eve", "ck-eve-01", uid=5, digest_char="b")
@@ -1132,7 +1143,7 @@ def test_overfit_rejection_pays_even_though_it_cleared_the_floor(tmp_path):
     settle(h)
 
     assert h.state.statuses[digest] == SubmissionStatus.DUEL_LOST.value
-    assert "hk-eve" in h.state.cooldowns
+    assert digest not in h.state.near_misses
 
 
 # --- intake must not depend on how often the validator polls -------------------
@@ -1390,7 +1401,7 @@ def test_reentered_weights_are_rejected_across_rounds(tmp_path):
 
     assert h.state.statuses[again] == SubmissionStatus.FAILED_INTAKE.value
     assert first in h.state.failure_memory[again]["detail"]
-    assert "hk-mal" in h.state.cooldowns  # known content is not a free retry
+    assert h.state.attempts["hk-mal"] == {"2": again}  # known content still costs the attempt
 
     # The registry is durable: a restarted validator still knows the weights.
     reloaded = ValidatorState.load(h.tmp / "state")
@@ -1402,9 +1413,8 @@ def test_unconfirmed_winner_is_demoted_not_crowned(tmp_path):
     """A provisional winner that fails its confirmation duel settles near-miss.
 
     One 99.9% clear is one lottery ticket; the crown requires two independent
-    ones. The demoted entrant keeps everything a near-miss earns — arena
-    credit, the re-duel right, no cooldown — because it did beat the king once
-    and may well be genuinely better.
+    ones. The demoted entrant keeps everything a near-miss earns — the re-duel
+    right — because it did beat the king once and may well be genuinely better.
     """
     h = make_harness(tmp_path)
     h.holder["outcomes"] = [
@@ -1418,7 +1428,6 @@ def test_unconfirmed_winner_is_demoted_not_crowned(tmp_path):
     assert len(h.holder["duel_specs"]) == 2
     assert h.state.king.ref.digest == h.cfg.seed.seed_digest   # crown unmoved
     assert h.state.statuses[digest] == SubmissionStatus.NEAR_MISS.value
-    assert "hk-alice" not in h.state.cooldowns
     assert digest in h.state.near_misses                       # re-duel right intact
     verdicts = published_verdicts(h.chain)
     assert verdicts and all(v.split("|")[2] == "R" for v in verdicts)
@@ -1746,42 +1755,41 @@ def test_round_trigger_rejects_a_bad_key():
     assert hmac.compare_digest("k", "k")   # the primitive the handler uses
 
 
-def test_a_spent_hotkey_is_refused_even_after_a_win(tmp_path):
-    """Winning does not refill the hotkey.
+def test_the_king_cannot_challenge_itself_with_a_new_model(tmp_path):
+    """Winning does not open a free lane to defend the crown.
 
-    A crowned miner that wants to defend with a better model registers a fresh
-    hotkey like anyone else. Otherwise the incumbent alone would have unlimited
-    free attempts, which is the opposite of the pressure the rule creates.
+    A crowned hotkey's next reveal is refused as a self-challenge, so the
+    incumbent cannot re-enter its own throne through its own hotkey.
     """
     h = make_harness(
         tmp_path, outcome=make_outcome(lcb=0.09, delta=0.03, accepted=True, mu_priv=0.02)
     )
-    d_a, _, _ = add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
     settle(h)
-    assert h.state.spent_hotkeys["hk-alice"] == d_a
+    assert h.state.king.author_hotkey == "hk-alice"
 
     h.chain.advance()
     d_b, _, _ = add_challenger(
-        h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="b", register=False
+        h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="b", register=False,
+        king_digest=h.state.king.ref.digest,
     )
     h.service.tick()
+    assert [e["code"] for e in h.state.intake_log if e["digest"] == d_b][:1] == ["self_challenge"]
     assert d_b not in h.state.statuses
 
 
-def test_the_spent_ledger_survives_a_restart(tmp_path):
-    """A hotkey must not be refilled by a validator restart.
-
-    The ledger is the whole enforcement, so if it lived only in memory a
-    miner could wait out a redeploy and submit again for free.
-    """
-    from epago.validator.state import ValidatorState
-
+def test_the_attempt_ledger_survives_a_restart(tmp_path, monkeypatch):
+    """An allowance must not be refilled by a validator restart."""
+    monkeypatch.setattr(constants, "ATTEMPTS_FROM_ROUND", 1)
     st = ValidatorState.load(tmp_path / "state")
-    st.spent_hotkeys["hk-alice"] = "d" * 64
+    st.record_attempt("hk-alice", 1, "d" * 64)
+    st.record_attempt("hk-alice", 1, "d" * 64)   # a retried round charges once
+    st.record_attempt("hk-alice", 2, "e" * 64)
     st.save()
 
     reloaded = ValidatorState.load(tmp_path / "state")
-    assert reloaded.spent_hotkeys == {"hk-alice": "d" * 64}
+    assert reloaded.attempts == {"hk-alice": {"1": "d" * 64, "2": "e" * 64}}
+    assert reloaded.attempts_used("hk-alice") == 2
 
 
 # --- a validator that runs no duels computes the same weights -----------------
@@ -2438,3 +2446,78 @@ def test_a_generator_release_publishes_no_manifest(tmp_path):
     h = _generator_release_harness(tmp_path)
     h.service._publish_pool_manifest()
     assert not list((h.service.state.state_dir / "publications").glob("*manifest*"))
+
+
+# --- champion accuracy: measured, never assumed -------------------------------------
+
+
+def _king_scored(public_acc: float, private_acc: float) -> DuelOutcome:
+    """A losing duel whose only interesting part is how the king scored."""
+    return DuelOutcome(
+        public=make_half(0.01, public_acc, public_acc + 0.01),
+        private=make_half(0.01, private_acc, private_acc + 0.01),
+        lcb_pub=-0.01,
+        delta=0.03,
+        accepted=False,
+        boot_seed_hex="ab" * 8,
+        public_seed_hex="cd" * 8,
+        judge_tier_counts=(),
+    )
+
+
+def test_the_first_round_sets_champion_accuracy_and_later_rounds_average_it(tmp_path):
+    """A new validator has not measured its king. Its 0.5 stand-in only feeds the
+    first floor: the first scored round replaces it outright, and from then on
+    each round moves the average."""
+    from epago.core.stats import update_acc_ema
+    from epago.validator.roundapi import RoundTrigger
+
+    h = _generator_release_harness(tmp_path, outcome=_king_scored(0.20, 0.10))
+    h.cfg = replace(h.service.cfg, chain=replace(h.service.cfg.chain, round_authority_hotkey=""))
+    h.service.cfg = h.cfg
+    trigger = RoundTrigger()
+    h.service._round_trigger = trigger
+    assert h.state.king_acc_ema == 0.5 and h.state.king_acc_history == []
+
+    add_challenger(h, "alice", "hk-alice", "ck-alice-01", uid=2, digest_char="a")
+    h.service.tick()
+    h.chain.advance(1)
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    assert h.state.last_round_run == 1
+    assert h.state.king_acc_ema == pytest.approx(0.15)          # (0.20 + 0.10) / 2, no 0.5 in it
+    (first,) = h.state.king_acc_history
+    assert (first["round"], first["coronation"]) == (1, False)
+    assert first["observed"] == pytest.approx(0.15) and first["ema"] == pytest.approx(0.15)
+    (record_file,) = list(h.service.audit_log.dir.rglob("*_round000001.json"))
+    assert json.loads(record_file.read_text())["king_acc"]["observed"] == pytest.approx(0.15)
+
+    h.holder["outcome"] = _king_scored(0.40, 0.30)
+    add_challenger(h, "bob", "hk-bob", "ck-bob-001", uid=3, digest_char="b",
+                   king_digest=h.state.king.ref.digest)
+    h.service.tick()
+    h.chain.advance(100)
+    trigger.request()
+    for _ in range(3):
+        h.service.tick(); h.chain.advance(constants.VERDICT_REVEAL_BLOCKS + 1)
+    assert h.state.last_round_run == 2
+    assert h.state.king_acc_ema == pytest.approx(update_acc_ema(0.15, 0.35))
+    assert [e["round"] for e in h.state.king_acc_history] == [1, 2]
+
+
+def test_champion_accuracy_history_survives_a_restart(tmp_path):
+    from epago.validator.state import ValidatorState
+
+    st = ValidatorState.load(tmp_path)
+    st.king_acc_history.append({"round": 1, "block": 10, "observed": 0.2, "ema": 0.2, "coronation": False})
+    st.save()
+    assert ValidatorState.load(tmp_path).king_acc_history == st.king_acc_history
+
+
+def test_a_state_file_from_before_the_history_still_loads(tmp_path):
+    from epago.validator.state import ValidatorState
+
+    (tmp_path / "state.json").write_text(json.dumps({"king_acc_ema": 0.44}))
+    st = ValidatorState.load(tmp_path)
+    assert st.king_acc_history == [] and st.king_acc_ema == 0.44

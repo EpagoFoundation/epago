@@ -220,7 +220,7 @@ Epago's schedule keeps the arena alive:
 - **Self-dethrone inherits the reign clock**: crowning yourself *from the same
   hotkey* with a sliced +δ improvement does not reset decay, so slicing buys nothing;
   slicing across freshly registered hotkeys is deterred by the per-hotkey
-  registration burn instead (R8).
+  registration burn and attempt allowance instead (R8).
 - **Arena 10% rising to 15%**: the **three most recent former kings**, in equal
   shares. Being dethroned costs the crown, not everything — a displaced champion
   keeps earning for three more reigns before aging off. That is what makes losing
@@ -276,7 +276,7 @@ The mechanism makes copying *worthless* rather than *detectable*. Exact content 
 still rejected cheaply: shard equality against the king at intake, and a persistent
 **weight-fingerprint registry** that makes weights terminal under every digest once
 they have dueled — re-uploading or re-sharding known content mints a new digest but
-not a new attempt, and cools the hotkey down. **Digest ownership belongs to the
+not a new model, and forfeits the attempt. **Digest ownership belongs to the
 first on-chain reveal** — you cannot claim someone else's checkpoint by re-revealing
 it, and the timelock prevents mempool sniping. No spoofable registry timestamps are
 consulted anywhere. Two rules close what luck is left: near-ties inside the
@@ -314,32 +314,31 @@ Public submission through a Hugging Face repository remains supported and needs
 no credentials. It differs in one respect: everyone can read the weights
 immediately.
 
-### 2.8 Why one submission per hotkey, instead of bonds
+### 2.8 Why an attempt allowance, instead of bonds
 
 **Failure mode prevented: spam — without custodial risk.** An economic bond
 (stake-to-submit) requires either trusted custody or protocol-level slashing,
 neither of which exists here without reintroducing an operator.
 
-Instead a hotkey gets **one submission, permanently**. It is spent the moment
-that submission reaches the duel queue, whatever the verdict turns out to be,
-and another attempt means registering a fresh hotkey and paying its
-registration burn.
+Instead a hotkey gets **three attempts, one model per round**, counted from
+round 4. An attempt is used when a round takes the model, whatever the verdict,
+and each attempt must be a different model. A later reveal before the round
+opens replaces an earlier one, and there is no cooldown after a loss.
 
-This prices attempts in TAO rather than in time. The earlier design used an
-escalating cooldown ladder — 24 hours, doubling on repeat, capped at six days,
-scaled up under congestion — but time is a weak currency against a spammer
-holding many hotkeys, who simply runs them in parallel. It also left a band
-unpriced: a rule that fired only below `lcb = −0.05` charged nothing for the
-whole `−0.05..0` range, which is exactly where a noise-perturbed copy of the
-king lands. Those cost nothing to make, no gate flags them, and roughly half
-draw a positive LCB by luck. Charging a registration burn per attempt is what
-turns a per-duel significance bar into a bounded rate per miner.
+This caps what one identity can draw from the exam. The earlier designs priced
+attempts differently — first in time, with an escalating cooldown ladder, then
+in TAO, with one submission per hotkey forever. The ladder was weak against a
+spammer running many hotkeys in parallel, and at one round a day it routinely
+kept a hotkey out of the next round. One-per-hotkey made a queued submission
+that a coronation turned stale cost its author a fresh registration through no
+fault of its own. Three attempts keep attempts bounded without either penalty:
+a noise-perturbed copy of the king, which no gate flags and which draws a
+positive LCB by luck about half the time, still spends one of three.
 
-A submission refused *before* the queue — malformed payload, unregistered
-hotkey, bad repo name — does not spend the hotkey. Burning a registration over
-a formatting typo would punish honest error rather than gaming. A near-miss
-keeps its one re-duel on a fresh exam, since that is the same submission being
-re-judged rather than a second one.
+A submission refused at intake — malformed payload, unregistered hotkey, bad
+repo name, stale parent — uses no attempt. Burning one over a formatting typo
+would punish honest error rather than gaming. A near-miss may re-enter the same
+model once on a fresh exam, and that re-entry is one of its three attempts.
 
 Identity is the hotkey: the registered neuron on the metagraph. Sybils multiply
 cost rather than throughput, because every fresh hotkey must win a competitive
@@ -417,8 +416,8 @@ the king's weights at coronation. Private pool curation? An autonomous
 mint-QA-rotate-publish loop. Emission phase activation? A deterministic on-chain
 condition (and on testnet, the phase-gate env zeros make emissions mainnet-equivalent
 from block one). Constants that need tuning? Computed from rolling calibration by
-pinned formulas. Queue overload? The circuit breaker prices intake in time
-automatically. A validator is a box you power, not a job you do.
+pinned formulas. Queue overload? Each round's field is capped and the overflow
+waits its turn automatically. A validator is a box you power, not a job you do.
 
 ### 2.13 Why the anchor exists
 
@@ -496,8 +495,8 @@ flowchart LR
 | `epago/eval/server.py` + `remote.py` + `cli.py` | GPU eval server (`epago eval serve`, bearer auth, single-duel lock, SSE progress) + validator-side remote runner | The CPU-box/GPU-box split; the wire path is lossless — a remote duel returns a `DuelOutcome` bit-identical to the in-process one on the same inputs (scripted backend), so location changes nothing the protocol reads |
 | `epago/eval/anchor.py` | External benchmark runner + divergence metric | The eval-of-the-eval (§2.13) |
 | `epago/taskgen/` | Rule-based templates (`R1` → `SCI4`) with the field-neutral `FindingVocabulary` bound per release, seeded generator, **task QA pipeline** (derivability/ambiguity/masking/form), private pool lifecycle, ingestion, difficulty controller | Benchmark correctness is a pipeline, not a hope; dead templates retire automatically |
-| `epago/validator/state.py` | Durable state: king, queue, spent hotkeys, arena, near-miss retry ledger, anchor history, SLA records; atomic writes | Crash-safe; the king is also re-derivable from chain, so state loss is recoverable |
-| `epago/validator/intake.py` | The gate ladder + one-submission-per-hotkey + queue circuit breaker + near-miss retry consumption | R3/R4/R8 economics in one file |
+| `epago/validator/state.py` | Durable state: king, queue, attempt ledger, arena, near-miss retry ledger, anchor history, SLA records; atomic writes | Crash-safe; the king is also re-derivable from chain, so state loss is recoverable |
+| `epago/validator/intake.py` | The gate ladder + attempt allowance + one model per hotkey per round + near-miss re-entry | R3/R4/R8 economics in one file |
 | `epago/validator/audit.py` | Canonical unsigned digest (`audit16`), wallet signing, hash-chained log, `ea1` checkpoints, delayed publication | §2.11; signature never changes the digest the on-chain verdict commits to |
 | `epago/validator/service.py` | The orchestration tick: scan → one duel end-to-end → verdict → quorum derivation → rotation/calibration/anchor → weights | Single-file readable core loop; every failure degrades machine-readably, never halts |
 | `epago/validator/wiring.py` | `build_production_deps()` — the one place live subsystems meet (remote-eval switch, judge loading, managed pool, signer) | A seam mismatch is a wiring bug in exactly one file |
@@ -523,8 +522,8 @@ flowchart LR
 | Quorum | ACCEPT stake ≥ 51% of active evaluators; bootstrap mode < 3 evaluators; verdict timeout ~24h | `chain.toml [quorum]` |
 | Reveal delays | submissions 5 blocks; verdicts 5 blocks | `BLOCKS_UNTIL_REVEAL`, `VERDICT_REVEAL_BLOCKS` |
 | Emissions | king 90% × decay(t½ ≈ 30d) × bonus(≤3×, ~24h); arena takes the remainder of the pooled budget, ~3d half-life | `chain.toml [emissions]`, `core/emissions.py` |
-| One per hotkey | a hotkey is spent when its submission reaches the queue, permanently | `validator/intake.py` |
-| Near-miss | `0 < lcb ≤ δ`: no penalty, ONE re-duel via a NEW reveal (fresh seed) | `NEAR_MISS_RETRIES` |
+| Attempts | 3 per hotkey from round 4; used when a round takes the model; one model per round, the latest | `MAX_ATTEMPTS_PER_HOTKEY`, `ATTEMPTS_FROM_ROUND` |
+| Near-miss | `0 < lcb ≤ δ`: no penalty, ONE re-entry via a NEW reveal (fresh seed), using an attempt | `NEAR_MISS_RETRIES` |
 | Rollouts | 40 turns, 300s, 32k ctx, greedy seed 42, ≤200-char answers, 16-way batched | `constants.py` |
 | Pools | rotate ~6 days, publish in full at rotation | `PRIVATE_POOL_ROTATION_BLOCKS` |
 | Audit | signed records; `ea1` checkpoint every 100; public tasks release when each round ends | `AUDIT_*` |
@@ -595,8 +594,8 @@ verdict latency. The design levers, all env-tunable and hardware-neutral:
 - Size hardware empirically with `scripts/measure_determinism.py` — it reports
   per-rollout wall time, projected duel GPU-hours, and the harness noise floor on the
   actual card, and its `--compare` mode measures cross-hardware disagreement between
-  two boxes. Demand is structurally bounded (one live submission per hotkey, UID cap,
-  spent hotkeys, stale flushes at every coronation).
+  two boxes. Demand is structurally bounded (one model per hotkey per round, UID cap,
+  three attempts per hotkey, stale flushes at every coronation).
 
 ---
 

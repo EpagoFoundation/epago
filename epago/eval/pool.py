@@ -12,6 +12,12 @@ is a *whole* model on *one* device, loaded by the same
 process that can see exactly one GPU. There is nothing for a replica to
 disagree with a single-GPU box about.
 
+**A model too big for one card is the one exception.** When
+``EPAGO_VLLM_TP`` splits a model over *k* cards, every engine the box builds
+is split that way, pooled or not. A replica is then a group of *k* cards
+(:func:`replica_slots`) running exactly the engine the single-engine path
+would run, so pooling adds no numeric difference the box did not already have.
+
 **One device is the floor, not a degenerate case.** With one visible GPU this
 module is never constructed — :func:`resolve_devices` returns a single device,
 the callers keep their existing single-backend path (``EPAGO_EVAL_LOW_VRAM``
@@ -119,6 +125,8 @@ __all__ = [
     "build_pool",
     "place_engines",
     "plan_replicas",
+    "replica_cards",
+    "replica_slots",
     "resolve_devices",
     "shard_indices",
     "split_judge_device",
@@ -129,7 +137,9 @@ __all__ = [
 #: visible devices) or an explicit list of *logical* indices into the visible
 #: set (``0,2,5``). A trailing comma forces list semantics for a single device
 #: (``3,`` = "only logical device 3", where bare ``3`` would mean "three
-#: devices"). Unset or ``all`` = every visible device.
+#: devices"). Unset or ``all`` = every visible device. Selection is over cards;
+#: when one replica needs several (``EPAGO_VLLM_TP``), the selected cards are
+#: then grouped into replicas by :func:`replica_slots`.
 DEVICES_ENV = "EPAGO_EVAL_GPUS"
 
 
@@ -223,6 +233,45 @@ def resolve_devices(spec: str | None = None) -> tuple[str, ...]:
     if count < 0:
         raise ValueError(f"{DEVICES_ENV}={raw!r} must not be negative")
     return devices[:count]
+
+
+def replica_cards() -> int:
+    """Cards one replica needs: the engine's tensor-parallel size.
+
+    Read from ``EPAGO_VLLM_TP``, the same variable
+    :class:`~epago.eval.backend.VllmBackend` reads, so the pool never hands an
+    engine fewer cards than it will try to use.
+    """
+    raw = os.environ.get("EPAGO_VLLM_TP", "").strip()
+    if not raw:
+        return 1
+    try:
+        cards = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"EPAGO_VLLM_TP={raw!r} is not a card count") from exc
+    return max(cards, 1)
+
+
+def replica_slots(devices: Sequence[str], cards: int) -> tuple[str, ...]:
+    """Group cards into replica slots of ``cards`` each, in order.
+
+    A slot is what a worker is pinned to, so a group is written the way
+    ``CUDA_VISIBLE_DEVICES`` takes it (``"0,1,2,3"``). Fewer cards than one
+    replica needs gives no slots, which leaves the single-engine path in charge
+    of the box. A remainder raises: cards left idle by a miscount are a mistake
+    the operator should see.
+    """
+    if cards <= 1:
+        return tuple(devices)
+    whole, extra = divmod(len(devices), cards)
+    if whole == 0:
+        return ()
+    if extra:
+        raise ValueError(
+            f"{len(devices)} cards do not split into replicas of {cards} "
+            f"(EPAGO_VLLM_TP); select a multiple of {cards} with {DEVICES_ENV}"
+        )
+    return tuple(",".join(devices[i:i + cards]) for i in range(0, len(devices), cards))
 
 
 # --- planning -----------------------------------------------------------------
@@ -634,6 +683,7 @@ class GpuPool:
                             concurrency=concurrency,
                             llm_judge=judge,
                             on_result=report,
+                            transcript=(shard.label, phase),
                         )
                         spent = time.monotonic() - began
                         slot.generate_seconds += spent
@@ -807,7 +857,7 @@ def place_engines(
     """
     if kind != "vllm":
         return None, backend_factory, backend_factory
-    devices = resolve_devices()
+    devices = replica_slots(resolve_devices(), replica_cards())
     pool_devices, judge_device = (
         split_judge_device(devices) if judge_on_own_device else (devices, None)
     )
@@ -838,7 +888,11 @@ def build_pool(
     validator on the code path it has always run, LOW_VRAM swap and all. Every
     caller treats ``pool is None`` as "do exactly what you did before".
     """
-    found = tuple(devices) if devices is not None else resolve_devices()
+    found = (
+        tuple(devices)
+        if devices is not None
+        else replica_slots(resolve_devices(), replica_cards())
+    )
     if len(found) < 2:
         logger.info("eval pool disabled: %d usable device(s)", len(found))
         return None

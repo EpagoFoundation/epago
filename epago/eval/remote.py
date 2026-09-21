@@ -26,7 +26,10 @@ from epago.core.types import (
     DuelHalf,
     DuelOutcome,
     DuelSpec,
+    Entrant,
     ModelRef,
+    RoundDuelSpec,
+    RoundResult,
     Task,
     TaskOrigin,
 )
@@ -36,8 +39,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DirRefIndex",
     "DuelRequest",
+    "EntrantRequest",
     "RemoteEvalError",
     "RemoteEvalRunner",
+    "RoundRequest",
     "outcome_from_wire",
     "outcome_to_wire",
     "ref_from_wire",
@@ -199,6 +204,102 @@ class DuelRequest:
             king_acc_ema=self.king_acc_ema,
             noise_floor=self.noise_floor,
             round_id=self.round_id,
+        )
+
+
+@dataclass(frozen=True)
+class EntrantRequest:
+    """One round entrant over the wire: its checkpoint as a pinned reference,
+    plus the identity its verdict is keyed on."""
+
+    challenger: ModelRef
+    digest: str
+    repo: str
+    author_hotkey: str
+
+    def to_wire(self) -> dict:
+        return {
+            "challenger": ref_to_wire(self.challenger),
+            "digest": self.digest,
+            "repo": self.repo,
+            "author_hotkey": self.author_hotkey,
+        }
+
+    @classmethod
+    def from_wire(cls, payload: dict) -> "EntrantRequest":
+        return cls(
+            challenger=ref_from_wire(payload["challenger"]),
+            digest=payload["digest"],
+            repo=payload["repo"],
+            author_hotkey=payload["author_hotkey"],
+        )
+
+
+@dataclass(frozen=True)
+class RoundRequest:
+    """One competition round over the wire: the king and every entrant on one exam.
+
+    Mirrors :class:`~epago.core.types.RoundDuelSpec` the way :class:`DuelRequest`
+    mirrors a duel. The server answers the exam with the king once and pairs
+    every entrant against those answers. Results come back in ``entrants``
+    order.
+    """
+
+    king: ModelRef
+    entrants: list[EntrantRequest]
+    public_tasks: list[Task]
+    private_tasks: list[Task]
+    round: int
+    round_block_hash: str
+    king_acc_ema: float
+    noise_floor: float
+
+    def to_wire(self) -> dict:
+        return {
+            "king": ref_to_wire(self.king),
+            "entrants": [e.to_wire() for e in self.entrants],
+            "public_tasks": [task_to_wire(t) for t in self.public_tasks],
+            "private_tasks": [task_to_wire(t) for t in self.private_tasks],
+            "round": self.round,
+            "round_block_hash": self.round_block_hash,
+            "king_acc_ema": self.king_acc_ema,
+            "noise_floor": self.noise_floor,
+        }
+
+    @classmethod
+    def from_wire(cls, payload: dict) -> "RoundRequest":
+        return cls(
+            king=ref_from_wire(payload["king"]),
+            entrants=[EntrantRequest.from_wire(e) for e in payload["entrants"]],
+            public_tasks=[task_from_wire(t) for t in payload["public_tasks"]],
+            private_tasks=[task_from_wire(t) for t in payload["private_tasks"]],
+            round=int(payload["round"]),
+            round_block_hash=payload["round_block_hash"],
+            king_acc_ema=float(payload["king_acc_ema"]),
+            noise_floor=float(payload["noise_floor"]),
+        )
+
+    def to_spec(self, king_dir: Path, challenger_dirs: list[Path]) -> RoundDuelSpec:
+        """Bind materialized snapshot directories, one per entrant in order."""
+        if len(challenger_dirs) != len(self.entrants):
+            raise ValueError("one snapshot directory per entrant")
+        return RoundDuelSpec(
+            king_dir=king_dir,
+            entrants=tuple(
+                Entrant(
+                    digest=e.digest,
+                    repo=e.repo,
+                    author_hotkey=e.author_hotkey,
+                    challenger_dir=d,
+                )
+                for e, d in zip(self.entrants, challenger_dirs)
+            ),
+            public_tasks=self.public_tasks,
+            private_tasks=self.private_tasks,
+            round=self.round,
+            round_block_hash=self.round_block_hash,
+            king_acc_ema=self.king_acc_ema,
+            noise_floor=self.noise_floor,
         )
 
 
@@ -371,6 +472,48 @@ class RemoteEvalRunner:
             round_id=spec.round_id,
         )
         return outcome_from_wire(self._post("/duel", request.to_wire()))
+
+    def run_round_duel(
+        self,
+        spec: RoundDuelSpec,
+        env: object = None,
+        backend_factory: object = None,
+        llm_judge: object = None,
+        *,
+        on_progress: object = None,
+    ) -> list[RoundResult]:
+        """Contract-compatible with :func:`epago.eval.duel.run_round_duel`: the
+        whole round in one call, so the king answers the exam once."""
+        del env, backend_factory, llm_judge, on_progress  # server-owned
+        request = RoundRequest(
+            king=self._ref_resolver(spec.king_dir),
+            entrants=[
+                EntrantRequest(
+                    challenger=self._ref_resolver(e.challenger_dir),
+                    digest=e.digest,
+                    repo=e.repo,
+                    author_hotkey=e.author_hotkey,
+                )
+                for e in spec.entrants
+            ],
+            public_tasks=spec.public_tasks,
+            private_tasks=spec.private_tasks,
+            round=spec.round,
+            round_block_hash=spec.round_block_hash,
+            king_acc_ema=spec.king_acc_ema,
+            noise_floor=spec.noise_floor,
+        )
+        body = self._post("/round", request.to_wire())
+        rows = body.get("results", [])
+        if [r.get("digest") for r in rows] != [e.digest for e in spec.entrants]:
+            raise RemoteEvalError(
+                "eval server /round returned results that do not match the "
+                "round's entrants"
+            )
+        return [
+            RoundResult(entrant=e, outcome=outcome_from_wire(r["outcome"]))
+            for e, r in zip(spec.entrants, rows)
+        ]
 
     def run_calibration_duel(
         self,
