@@ -39,6 +39,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from epago.core.types import ModelRef
+from epago.eval import transcripts
 from epago.eval.backend import ModelBackend
 from epago.eval.duel import run_calibration_duel, run_duel, run_round_duel
 from epago.eval.harness import harness_digest
@@ -163,6 +164,7 @@ def create_app(
             )
             spec = req.to_spec(Path(king_dir), Path(challenger_dir))
             king_key = str(Path(king_dir).resolve())
+            transcripts.begin_job(f"duel-{req.round_id or req.author_hotkey}")
             try:
                 outcome = await asyncio.to_thread(
                     run_duel,
@@ -174,6 +176,7 @@ def create_app(
                     pool=pool,
                 )
             finally:
+                transcripts.end_job()
                 # With a pool, residency is the pool's business: every device
                 # holds one replica and drops it only when handed a different
                 # checkpoint, so the king stays warm and nothing needs evicting.
@@ -207,6 +210,7 @@ def create_app(
                 for e in req.entrants
             ]
             spec = req.to_spec(Path(king_dir), challenger_dirs)
+            transcripts.begin_job(f"round{req.round:06d}")
             try:
                 results = await asyncio.to_thread(
                     run_round_duel,
@@ -218,6 +222,7 @@ def create_app(
                     pool=pool,
                 )
             finally:
+                transcripts.end_job()
                 # Without a pool the round runner closes every engine it opens,
                 # the king's included, so nothing is left to keep resident.
                 if pool is None:
@@ -244,11 +249,15 @@ def create_app(
             king_dir = await asyncio.to_thread(materialize_fn, king, cache)
             # Same judge the /duel path uses: the noise floor has to be measured
             # on the graded path duels actually run, judge included.
-            rate = await asyncio.to_thread(
-                lambda: run_calibration_duel(
-                    Path(king_dir), tasks, env, cached_factory, llm_judge, pool=pool
+            transcripts.begin_job("calibration")
+            try:
+                rate = await asyncio.to_thread(
+                    lambda: run_calibration_duel(
+                        Path(king_dir), tasks, env, cached_factory, llm_judge, pool=pool
+                    )
                 )
-            )
+            finally:
+                transcripts.end_job()
             return {"rate": rate}
 
     @app.post("/probes")

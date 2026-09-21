@@ -52,11 +52,11 @@ PUBLISHED_LINKS = {
 REFUSAL_REASONS = {
     # intake: the reveal itself
     "duplicate_digest": "Another hotkey revealed this same checkpoint first; the first reveal owns it.",
-    "hotkey_spent": "This hotkey has already submitted once; each hotkey gets one submission.",
+    "attempts_exhausted": "This hotkey has used all of its attempts; each hotkey may enter three rounds.",
+    "superseded": "A later submission from the same hotkey replaced it before any round took it.",
     "public_submission": "This subnet takes private uploads only; public Hugging Face submissions are refused.",
     "stale_parent": "It was trained against a king that is no longer the current one.",
     "self_challenge": "Its author already holds the crown, and the king cannot challenge itself.",
-    "cooldown": "Its hotkey is in a cooldown; it can be revealed again once the cooldown ends.",
     "failure_memory": "This checkpoint already failed once, and a failed checkpoint is not checked again.",
     "unknown_hotkey": "Its hotkey is not registered on the subnet.",
     "hotkey_not_sealable": "Its hotkey is not an Ed25519 key, so upload credentials cannot be sent to it.",
@@ -76,6 +76,9 @@ REFUSAL_REASONS = {
     "exact_copy": "Its weights are identical to the current king.",
     "probes": "It failed the format and sanity checks run before the exam.",
     "duplicate_weights": "Its weights are identical to another submission that entered first.",
+    # retired rules, kept so refusals already on record still read correctly
+    "hotkey_spent": "Under an earlier rule this hotkey had already used its one submission.",
+    "cooldown": "Under an earlier rule its hotkey was in a cooldown after a loss.",
 }
 REFUSAL_FALLBACK = "The submission did not pass the validator's checks."
 
@@ -521,6 +524,7 @@ def _queue(state: dict, block: int) -> list[dict]:
 def _funnel(state: dict) -> list[dict]:
     """Intake funnel: where submissions ended, in pipeline order."""
     order = (
+        ("superseded", "Replaced"),
         ("failed_intake", "Failed intake"),
         ("stale_parent", "Stale parent"),
         ("failed_probes", "Failed probes"),
@@ -567,7 +571,7 @@ def _refused(state: dict, records: list[dict]) -> list[dict]:
     The funnel only counts these; a miner needs to find their own and read
     why. Two sources: failure memory and statuses for checkpoints the
     validator resolved, and the intake log for reveals refused on the spot
-    (spent or unregistered hotkeys, cooldowns, copied digests), which leave
+    (hotkeys out of attempts or unregistered, copied digests), which leave
     no status behind. Intake re-reads every reveal each tick, so the log
     repeats the same refusal; rows are keyed by ``(digest, hotkey)`` and
     dated by the first refusal. A submission that dueled is left out — it is

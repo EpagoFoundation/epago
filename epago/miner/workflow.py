@@ -235,7 +235,7 @@ def submit(
 
     ``hotkey`` is accepted and ignored. Authorship is now the hotkey that signs
     the commitment, which the chain records; carrying it in the payload let
-    anyone submit under someone else's identity, and intake keys cooldowns and
+    anyone submit under someone else's identity, and intake keys attempts and
     emission off authorship.
     """
     del hotkey

@@ -172,9 +172,9 @@ By pricing, not paging. Every audit record carries reveal, intake, and verdict b
 numbers (the verdict block is chain-stamped by the reveal channel, so it cannot be
 faked), and per-validator latency is publicly computable.
 
-A hotkey gets one submission, permanently. Whatever happens to it — crowned, near-miss, or beaten — that hotkey is spent, and trying again means registering a fresh one and paying the registration burn.
+A hotkey may enter three rounds, one model per round, each a different model; counting starts at round 4. An attempt is used when a round takes the model, whatever the verdict. If a hotkey reveals twice before a round opens, the later model replaces the earlier and only it is entered. There is no cooldown after a loss. After three attempts, another try means registering a fresh hotkey and paying the registration burn.
 
-That price is the mechanism. If attempts were free the cheapest strategy would be to upload many mediocre checkpoints and let the duels find one that got lucky on its holdout, and every one of those costs validators a full rollout sweep. Paying per attempt pushes the spend back into training. A near-miss keeps its one re-duel on fresh tasks, because that is the same submission being re-judged rather than a second one.
+That cap is the mechanism. If attempts were free the cheapest strategy would be to upload many mediocre checkpoints and let the duels find one that got lucky on its holdout, and every one of those costs validators a full rollout sweep. Capping attempts pushes the spend back into training. A near-miss may re-enter the same model once on fresh tasks, and that re-entry is one of its three attempts.
 
 ### How do I audit a verdict?
 

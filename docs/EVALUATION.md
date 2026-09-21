@@ -650,7 +650,7 @@ never consumes exam time.
 | **weight-norm sanity** | per-layer and global norm ratios within bounds |
 | **size cap** | ≤1.05× the king's parameter count |
 | **fingerprint** | weights that have already dueled are refused under any digest |
-| **one per hotkey** | a hotkey gets exactly one submission, permanently |
+| **attempts** | a hotkey may enter three rounds from round 4, one model per round |
 
 The probe bar sits **below the base model's own measured compliance** — the gate
 rejects checkpoints that cannot operate the harness at all, not imperfect ones.
@@ -660,10 +660,11 @@ the same weights re-uploaded or re-sharded get a fresh digest. The fingerprint i
 *content* identity, so once weights have dueled, every later digest carrying them
 is a resubmission — whoever reveals it.
 
-**One submission per hotkey, permanently.** To try again a miner registers a new
-hotkey and pays the registration burn. That burn is the point: it prices every
-attempt, so flooding the queue with speculative checkpoints costs real TAO instead
-of being free.
+**Three attempts per hotkey.** An attempt is used when a round takes the model,
+whatever the verdict, and each must be a different model; a later reveal before
+the round replaces an earlier one. Beyond three, another try means registering a
+new hotkey and paying its burn, so flooding the queue with speculative
+checkpoints costs real TAO instead of being free.
 
 ---
 

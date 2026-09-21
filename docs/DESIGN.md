@@ -307,12 +307,12 @@ identically (`epago/validator/intake.py`).
 | # | Gate | Rejects when | Failure code |
 |---|---|---|---|
 | 1 | **Wire format** | The payload does not parse as `e2`, or a digest fails the digest grammar | dropped with a warning |
-| 2 | **Supersession** | An older reveal from the same hotkey exists — only the latest per hotkey is considered | superseded silently |
+| 2 | **Supersession** | An older reveal from the same hotkey exists — only the latest per hotkey is considered, and once admitted it replaces the hotkey's waiting model (a model already in a running round keeps its place) | `superseded` |
 | 3 | **Digest ownership** | The digest was first revealed by a different hotkey (first on-chain reveal owns it) | `duplicate_digest` |
 | 4 | **Already resolved** | The digest is the reigning king, already queued, or terminally resolved | skipped |
 | 5 | **Stale parent** | `king_digest` does not equal the reigning king's digest | `stale_parent` |
 | 6 | **Self-challenge** | The author hotkey already holds the crown | `self_challenge` |
-| 7 | **Hotkey spent** | The author *hotkey* has already put a submission into the queue. One per hotkey, permanently — refused here, before the queue | `hotkey_spent` |
+| 7 | **Attempts** | The author *hotkey* has already had models taken into `MAX_ATTEMPTS_PER_HOTKEY = 3` rounds, counted from round 4 — refused here, before the queue | `attempts_exhausted` |
 | 7b | **Private only** | The contract sets `chain.private_submissions_only` and the challenger is a public `hf:` ref — its weights were readable by every rival from the moment of the reveal | `public_submission` |
 | 8 | **Failure memory** | The digest previously failed a deterministic gate — re-revealing an already-failed checkpoint is free to reject | `failure_memory` |
 | 9 | **Registration** | The hotkey is not registered on the netuid | `unknown_hotkey` |
@@ -347,8 +347,8 @@ A competition evaluates the **whole queued field at once** against the king, on
 | **Scoring** | The king answers the exam **once**; its per-task results are reused for every pairing. Each entrant is then scored exactly as a solo duel would score it. |
 | **Winner** | The highest `lcb_pub` among entrants that clear both halves — but LCBs within one calibrated noise floor of each other are the same measurement, and inside that band the **earlier reveal** wins (then digest, as the final deterministic tie-break). Reveal order is what makes copying a pending rival's checkpoint strictly worse than being the rival: a perturbed copy cannot out-score its source beyond noise, and inside noise it now always loses. Exactly one `ACCEPT` verdict is committed per round. |
 | **Confirmation** | The provisional winner is re-dueled once (`CORONATION_CONFIRMATION_DUELS = 1`) on a **fresh** exam — `b"confirm-public"` / `b"confirm-private"` seeds from the same round block hash — and must clear the floor again before its `ACCEPT` is committed. One 99.9% clear is one lottery ticket; requiring two independent clears squares the false-crown probability, so a fleet of lucky noise-copies stays harmless without raising the bar a genuinely better model must beat. An unconfirmed winner settles as a near-miss; a confirmation that cannot be minted or run also demotes, never crowns. The outcome is pinned in the round's audit record (`confirmation` block). |
-| **Everyone else** | Rejected. Runners-up that beat the king are near-misses (§1.4) — one re-duel on a fresh exam, no emission. Every entrant's hotkey is spent either way. |
-| **Forfeit** | An entrant whose sweep cannot run at all is scored `lcb = −1` rather than skipped, so a checkpoint that reliably crashes the harness spends its hotkey like any other submission instead of occupying a slot in every round for free. |
+| **Everyone else** | Rejected. Runners-up that beat the king are near-misses (§1.4) — one re-entry on a fresh exam, no emission. Every entrant uses one of its hotkey's attempts either way. |
+| **Forfeit** | An entrant whose sweep cannot run at all is scored `lcb = −1` rather than skipped, so a checkpoint that reliably crashes the harness uses its attempt like any other entry instead of occupying a slot in every round for free. |
 
 Two properties follow from minting the exam once per round rather than once per
 submission:
@@ -801,44 +801,38 @@ against mixes queue wait with evaluation and should be reset to the round cadenc
 evaluation window, or split into "queue wait" and "evaluation time" so the part
 a validator controls stays visible.
 
-- **One submission per hotkey, permanently.** No bond is escrowed to submit —
-  nothing is taken at launch. Instead, a hotkey is *spent* the moment its
-  submission reaches the duel queue, whatever the verdict turns out to be:
-  crowned, near-miss, or beaten. Another attempt means registering a fresh
-  hotkey and paying its registration burn.
-
-  The rule is enforced at intake against `state.spent_hotkeys`, which is
-  persisted — otherwise a validator restart would silently refill every hotkey.
-  A submission refused *before* the queue (malformed payload, unregistered
-  hotkey, bad repo name) does not spend it: burning a registration over a
+- **Three attempts per hotkey, one model per round.** No bond is escrowed to
+  submit — nothing is taken at launch. A hotkey may put a model into at most
+  `MAX_ATTEMPTS_PER_HOTKEY = 3` rounds, counted from `ATTEMPTS_FROM_ROUND = 4`,
+  so every hotkey enters round 4 with the full allowance. An attempt is used
+  when a round takes the model into its field, whatever happens to it there;
+  it is charged per round, so a round retried after a failure charges once.
+  A submission refused at intake uses nothing: burning an attempt over a
   formatting typo punishes honest error rather than gaming.
 
-  This replaces the escalating cooldown ladder, which priced repeat attempts in
-  *time* rather than in TAO. Time is a weak currency here: a spammer with many
-  hotkeys simply ran them in parallel, and the ladder's whole complexity —
-  strike memory, doubling, queue scaling, a cap — existed to make waiting hurt
-  enough. Charging a registration burn per attempt prices the thing directly.
-  It also closes the band the ladder left open: a noise-perturbed copy of the
-  king lands at `lcb ≈ 0`, which the `exact_copy` gate misses, the norm-sanity
-  probes miss, and roughly half of which drew a positive LCB. Repeating that
-  used to be a free draw on the `EVAL_ALPHA = 0.001` false-acceptance tail.
-  Now each draw costs a hotkey.
+  Each attempt is a different model — a scored digest is terminal, and the
+  weight-fingerprint registry catches the same weights under a new digest. The
+  one exception is a near-miss, which may re-enter the same model once on a
+  fresh exam, and that re-entry is one of its three attempts. A hotkey that
+  reveals again before a round opens replaces its waiting model; the replaced
+  one (`superseded`) uses no attempt.
 
-  A near-miss keeps its one re-duel on a fresh exam. That is the same
-  submission being re-judged against new tasks, not a second submission, so it
-  does not require a second hotkey.
+  The ledger is `state.attempts`, persisted as `{hotkey: {round: digest}}` —
+  otherwise a validator restart would silently refill every hotkey.
 
-  One consequence worth stating: the cooldown machinery is now unreachable for
-  the same hotkey, since it is spent before any cooldown could bite. The ledger
-  remains for dashboard reporting and for any future rule that keys on an
-  author across hotkeys.
-- **Queue circuit breaker.** `queue_scale` above is the breaker: while projected
-  queue latency (`(queue_depth + 1)` × a pinned per-duel estimate) stays within
-  `QUEUE_BREAKER_HOURS = 36` the scale is 1; beyond that it doubles for every
-  additional breaker-width of backlog. The formula is deterministic and published
-  in every intake result, so miners can compute it themselves. Under overload the
-  SLA degrades into an explicit, priced-in-time queue instead of silently blowing
-  through 48h.
+  This replaces two earlier rules. One submission per hotkey, permanently,
+  priced attempts in registration burns, but a coronation that made a queued
+  submission stale cost its author a fresh registration through no fault of
+  its own. The escalating cooldown ladder before it priced attempts in time,
+  which at one round a day routinely kept a hotkey out of the very next round.
+  Three attempts still bound what one identity can draw from the
+  `EVAL_ALPHA = 0.001` false-acceptance tail: a noise-perturbed copy of the
+  king lands at `lcb ≈ 0`, which the `exact_copy` gate and the norm-sanity
+  probes both miss, and each such draw now spends one of three attempts.
+- **Bounded demand.** Each round's field is capped at `ROUND_MAX_ENTRANTS`, the
+  overflow keeps its place for the next round, and each hotkey holds at most one
+  model per round. Under overload the SLA degrades into a visible queue rather
+  than silently blowing through its target.
 - Quorum redundancy means one slow or dead validator cannot stall coronation.
 
 ---
@@ -847,14 +841,14 @@ a validator controls stays visible.
 
 | # | Attack | Defense |
 |---|---|---|
-| 1 | **Exact copy** of the king (or of another challenger) resubmitted for credit | Per-shard content equality with the king is rejected before any duel (`exact_copy`); digest ownership is adjudicated purely by first on-chain reveal — later reveals of an already-revealed digest are rejected. No spoofable registry timestamps are consulted. Re-uploading the same weights under a fresh digest (new repo, new sharding) hits the persistent weight-fingerprint registry (`duplicate_weights`, gate 14b) and cools the hotkey down. |
+| 1 | **Exact copy** of the king (or of another challenger) resubmitted for credit | Per-shard content equality with the king is rejected before any duel (`exact_copy`); digest ownership is adjudicated purely by first on-chain reveal — later reveals of an already-revealed digest are rejected. No spoofable registry timestamps are consulted. Re-uploading the same weights under a fresh digest (new repo, new sharding) hits the persistent weight-fingerprint registry (`duplicate_weights`, gate 14b) and forfeits the attempt the round charged. |
 | 2 | **Near-copy perturbation** — download the king, add noise, re-upload | Priced rather than detected: a paired duel means the perturbed copy must beat its own parent by `delta` on fresh tasks, which noise does not do. It loses, and the attempt costs a hotkey whatever the verdict (§9) — a near-copy scores `lcb ≈ 0`, which no gate flags and which used to be free. No fine-tune-vs-copy classifier is needed. Perturbing a pending **rival's** checkpoint is priced by the winner rule instead: inside one noise floor the earlier reveal wins, so a copy that cannot beat its source beyond noise cannot out-place it. |
 | 2b | **Arena farming** — submit near-copies purely to collect emission | Structurally impossible: the arena pays the three most recent *former kings*, never near-misses. There is no credit to farm, and a farming attempt costs a hotkey like any other. |
-| 2c | **Multiple-testing the significance bar** — retry until the 1-in-1000 tail fires | `EVAL_ALPHA` is a per-duel false-positive rate, so unlimited free retries would eventually crown noise. Three instruments convert it into a bounded risk: same-digest retries are impossible (a verdict is terminal per digest, and the fingerprint registry extends that to the content itself); one submission per hotkey means every ticket costs a registration burn, so the attempt rate is bounded by TAO rather than by patience; and the **coronation confirmation duel** (§4) squares the tail per attempt — a lucky clear must repeat on a fresh exam before it crowns, so even a fleet of tickets buys ~nothing. |
+| 2c | **Multiple-testing the significance bar** — retry until the 1-in-1000 tail fires | `EVAL_ALPHA` is a per-duel false-positive rate, so unlimited free retries would eventually crown noise. Three instruments convert it into a bounded risk: same-digest retries are impossible (a verdict is terminal per digest, and the fingerprint registry extends that to the content itself); three attempts per hotkey mean a fresh ticket beyond them costs a registration burn, so the attempt rate is bounded by TAO rather than by patience; and the **coronation confirmation duel** (§4) squares the tail per attempt — a lucky clear must repeat on a fresh exam before it crowns, so even a fleet of tickets buys ~nothing. |
 | 3 | **Stale stockpiling** — pre-evaluate many checkpoints offline, reveal the winner later | Every reveal binds `king_digest`; a reveal against a dethroned king is dropped as `stale_parent`. Duel tasks are freshly derived from the reveal-block hash, so offline evaluation against old task sets predicts nothing. |
 | 4 | **Salami-slicing** — release a +5pp improvement as many +delta slices to farm reign time | Self-dethrone from the same hotkey inherits the reign clock (`inherits_reign`), so slices buy no decay reset; slicing across fresh hotkeys resets the clock but pays a competitive UID + registration burn per hotkey; the coronation bonus is proportional to `min(lcb/delta, cap)`, so a full reveal weakly dominates the sum of slices; each slice risks its own duel variance. |
 | 5 | **Sandbagging / hoarding** — the incumbent (or a leader) sits on improvements because the throne pays regardless | The reign band bleeds the king's share from 90% to 85% over ~3 days, so an undefended crown is always worth attacking; a dethroned king keeps earning from the arena for three more reigns, so losing the crown is survivable and challenging is rational; and the coronation bonus scales with measured improvement, so a hoarder is out-earned by revealing. |
-| 6 | **Spam / Sybil flooding** of the duel queue | Cheap-to-expensive gating (CPU intake before probes before duel), and one submission per hotkey: a hotkey is spent the moment its submission reaches the queue, so junk throughput is bounded by how many competitive UIDs and registration burns the flooder is willing to buy. The queue circuit breaker still prices congestion in time on top of that. Sybil hotkeys multiply cost, not throughput. |
+| 6 | **Spam / Sybil flooding** of the duel queue | Cheap-to-expensive gating (CPU intake before probes before duel), and three attempts per hotkey with one model per round, so junk throughput is bounded by how many competitive UIDs and registration burns the flooder is willing to buy; each round's field is capped on top of that. Sybil hotkeys multiply cost, not throughput. |
 | 7 | **Harness-breaking** — outputs crafted to crash or stall the rollout loop | Pinned deterministic harness (greedy, fixed seed, turn/time/context/answer-length caps) whose digest is in every audit record; the format probe rejects non-conformant models before the duel; rollout errors score as incorrect, never as retries. |
 | 8 | **Judge injection** — answers containing prompt-injection payloads for the fallback judge | Programmatic-first grading (exact and alias match) makes the judge rare; judge inputs are sanitized to a fixed schema; an adversarial CI suite gates judge releases; `judge_invocation_rate` is published per duel so drift toward judge-dependence is visible and auto-corrected by the difficulty controller. |
 | 9 | **Generator overfit** — training against the public task generator's distribution instead of general capability | Per-validator private holdouts gate every verdict (`mu_priv > 0`); each pool is continuously refreshed from a dated public document feed that postdates model cutoffs, so the private distribution keeps moving; the external benchmark anchor publishes internal-vs-external divergence and feeds it back into task generation. |
